@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SmartBill - 帳票管理システム</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    .sidebar { transition: all 0.3s ease-in-out; width: 256px; }
+    .sidebar.collapsed { width: 72px; }
+    .sidebar.collapsed .sidebar-logo-text,
+    .sidebar.collapsed .sidebar-subtitle,
+    .sidebar.collapsed .menu-label { display: none; }
+    .sidebar.collapsed .menu-item { justify-content: center; padding-left: 0; padding-right: 0; }
+    .sidebar.collapsed .menu-item i { margin: 0; width: auto; }
+    .sidebar.collapsed .sidebar-header { padding: 16px 8px; text-align: center; }
+    .sidebar.collapsed .sidebar-toggle-icon { transform: rotate(180deg); }
+    .sidebar-toggle { transition: all 0.3s ease-in-out; }
+    .sidebar-toggle-icon { transition: transform 0.3s ease-in-out; }
+    @media (max-width: 768px) {
+      .sidebar { transform: translateX(-100%); width: 256px !important; }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar.collapsed { transform: translateX(-100%); }
+    }
+    .menu-item.active { background-color: #3b82f6; color: white; }
+    .menu-item:hover:not(.active) { background-color: #e5e7eb; }
+    .sortable-ghost { opacity: 0.4; background-color: #dbeafe; }
+    .sortable-chosen { background-color: #eff6ff; }
+    .drag-handle { cursor: grab; color: #9ca3af; }
+    .drag-handle:hover { color: #6b7280; }
+    .drag-handle:active { cursor: grabbing; }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal-content {
+      background: white;
+      border-radius: 16px;
+      padding: 0;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+      animation: modalIn 0.2s ease-out;
+    }
+    @keyframes modalIn {
+      from { transform: scale(0.9); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    .page { display: none; }
+    .page.active { display: block; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <!-- Mobile Header -->
+  <div class="md:hidden bg-blue-600 text-white p-4 flex items-center justify-between">
+    <button id="menuToggle" class="text-2xl">
+      <i class="fas fa-bars"></i>
+    </button>
+    <h1 class="text-xl font-bold">SmartBill</h1>
+    <div class="w-8"></div>
+  </div>
+
+  <div class="flex h-screen overflow-hidden">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar fixed md:static inset-y-0 left-0 z-50 bg-white shadow-lg md:transform-none flex-shrink-0 overflow-y-auto">
+      <div class="sidebar-header p-4 border-b hidden md:block">
+        <div class="flex items-center justify-between">
+          <h1 class="text-2xl font-bold text-blue-600">
+            <i class="fas fa-file-invoice-dollar mr-2"></i>
+            <span class="sidebar-logo-text">SmartBill</span>
+          </h1>
+          <button id="sidebarToggle" class="sidebar-toggle text-gray-400 hover:text-gray-600 p-1 rounded hidden md:block" title="サイドバーを開閉">
+            <i class="fas fa-chevron-left sidebar-toggle-icon"></i>
+          </button>
+        </div>
+        <p class="sidebar-subtitle text-sm text-gray-500 mt-1">帳票管理システム</p>
+      </div>
+      <nav class="p-4">
+        <ul class="space-y-2" id="nav-menu">
+          <li>
+            <a href="#/" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors active text-gray-700" data-page="dashboard">
+              <i class="fas fa-chart-line w-6"></i>
+              <span class="menu-label ml-3">ダッシュボード</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/estimates" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="estimates">
+              <i class="fas fa-file-invoice w-6"></i>
+              <span class="menu-label ml-3">見積データ入力</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/deliveries" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="deliveries">
+              <i class="fas fa-truck w-6"></i>
+              <span class="menu-label ml-3">納品データ入力</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/invoices" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="invoices">
+              <i class="fas fa-file-invoice-dollar w-6"></i>
+              <span class="menu-label ml-3">請求書作成</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/clients" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="clients">
+              <i class="fas fa-building w-6"></i>
+              <span class="menu-label ml-3">取引先マスタ</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/products" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="products">
+              <i class="fas fa-box w-6"></i>
+              <span class="menu-label ml-3">商品マスタ</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/categories" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="categories">
+              <i class="fas fa-tags w-6"></i>
+              <span class="menu-label ml-3">分類マスタ</span>
+            </a>
+          </li>
+          <li>
+            <a href="#/company" class="menu-item nav-link flex items-center px-4 py-3 rounded-lg transition-colors text-gray-700" data-page="company">
+              <i class="fas fa-user-tie w-6"></i>
+              <span class="menu-label ml-3">自社情報</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </aside>
+
+    <!-- Overlay for mobile -->
+    <div id="overlay" class="fixed inset-0 bg-black bg-opacity-50 z-40 hidden md:hidden"></div>
+
+    <!-- Main Content -->
+    <main class="flex-1 p-4 md:p-8 overflow-y-auto">
+      <div class="max-w-7xl mx-auto">
+        <!-- Dashboard Page -->
+        <div id="page-dashboard" class="page active">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">ダッシュボード</h2>
+          
+          <!-- クイックアクション -->
+          <div class="bg-white rounded-lg shadow p-4 mb-6">
+            <div class="flex flex-wrap gap-3">
+              <a href="#/estimates?action=new" class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition">
+                <i class="fas fa-plus mr-2"></i>新規見積作成
+              </a>
+              <a href="#/deliveries?action=new" class="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
+                <i class="fas fa-plus mr-2"></i>新規納品作成
+              </a>
+              <a href="#/invoices?action=new" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                <i class="fas fa-plus mr-2"></i>新規請求作成
+              </a>
+            </div>
+          </div>
+
+          <!-- 統計カード -->
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white rounded-lg shadow p-5">
+              <div class="flex items-center">
+                <div class="bg-blue-500 rounded-full p-3">
+                  <i class="fas fa-yen-sign text-white text-xl"></i>
+                </div>
+                <div class="ml-4">
+                  <p class="text-gray-500 text-sm">今月の売上</p>
+                  <p id="monthlySales" class="text-xl font-bold text-gray-800">¥0</p>
+                </div>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-5">
+              <div class="flex items-center">
+                <div class="bg-orange-500 rounded-full p-3">
+                  <i class="fas fa-exclamation-circle text-white text-xl"></i>
+                </div>
+                <div class="ml-4">
+                  <p class="text-gray-500 text-sm">未入金請求</p>
+                  <p id="unpaidInvoices" class="text-xl font-bold text-gray-800">0件</p>
+                </div>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-5">
+              <div class="flex items-center">
+                <div class="bg-green-500 rounded-full p-3">
+                  <i class="fas fa-file-invoice text-white text-xl"></i>
+                </div>
+                <div class="ml-4">
+                  <p class="text-gray-500 text-sm">未請求納品書</p>
+                  <p id="uninvoicedCount" class="text-xl font-bold text-gray-800">0件</p>
+                </div>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-5">
+              <div class="flex items-center">
+                <div class="bg-purple-500 rounded-full p-3">
+                  <i class="fas fa-building text-white text-xl"></i>
+                </div>
+                <div class="ml-4">
+                  <p class="text-gray-500 text-sm">取引先数</p>
+                  <p id="clientCount" class="text-xl font-bold text-gray-800">0社</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Vercel デプロイ成功メッセージ -->
+          <div class="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
+            <div class="flex items-center">
+              <i class="fas fa-check-circle text-green-500 text-2xl mr-4"></i>
+              <div>
+                <h3 class="text-lg font-bold text-green-800">Vercelデプロイ成功！</h3>
+                <p class="text-green-700">SmartBillがVercelで正常に動作しています。</p>
+                <p class="text-green-600 text-sm mt-2">※ データベース接続は別途設定が必要です。現在はモックデータを表示しています。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Other Pages (Placeholder) -->
+        <div id="page-estimates" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">見積データ入力</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">見積データ入力ページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-deliveries" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">納品データ入力</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">納品データ入力ページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-invoices" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">請求書作成</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">請求書作成ページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-clients" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">取引先マスタ</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">取引先マスタページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-products" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">商品マスタ</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">商品マスタページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-categories" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">分類マスタ</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">分類マスタページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+
+        <div id="page-company" class="page">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">自社情報</h2>
+          <div class="bg-white rounded-lg shadow p-6">
+            <p class="text-gray-600">自社情報ページ（データベース接続後に利用可能）</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Simple SPA Router
+    function router() {
+      const hash = window.location.hash || '#/';
+      const page = hash.replace('#/', '').split('?')[0] || 'dashboard';
+      
+      // Hide all pages
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      
+      // Show current page
+      const currentPage = document.getElementById('page-' + page);
+      if (currentPage) {
+        currentPage.classList.add('active');
+      } else {
+        document.getElementById('page-dashboard').classList.add('active');
+      }
+      
+      // Update nav
+      document.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        if (link.dataset.page === page) {
+          link.classList.add('active');
+        }
+      });
+    }
+
+    // Initialize
+    window.addEventListener('hashchange', router);
+    window.addEventListener('load', router);
+
+    // Mobile menu toggle
+    document.getElementById('menuToggle')?.addEventListener('click', () => {
+      document.getElementById('sidebar').classList.toggle('open');
+      document.getElementById('overlay').classList.toggle('hidden');
+    });
+
+    document.getElementById('overlay')?.addEventListener('click', () => {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('overlay').classList.add('hidden');
+    });
+
+    // Sidebar toggle
+    document.getElementById('sidebarToggle')?.addEventListener('click', () => {
+      document.getElementById('sidebar').classList.toggle('collapsed');
+    });
+
+    // Load dashboard data
+    async function loadDashboard() {
+      try {
+        const response = await axios.get('/api/dashboard/summary');
+        const data = response.data;
+        document.getElementById('monthlySales').textContent = '¥' + (data.monthly_sales || 0).toLocaleString();
+        document.getElementById('unpaidInvoices').textContent = (data.unpaid_invoices?.count || 0) + '件';
+        document.getElementById('uninvoicedCount').textContent = (data.uninvoiced_count || 0) + '件';
+      } catch (e) {
+        console.log('Dashboard API not available');
+      }
+    }
+
+    loadDashboard();
+  </script>
+</body>
+</html>
+

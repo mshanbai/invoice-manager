@@ -3,6 +3,9 @@ import type { Bindings } from '../types'
 
 const api = new Hono<{ Bindings: Bindings }>()
 
+// SaaS用: 開発中は仮のユーザーIDを使用
+const DEMO_USER_ID = 'demo-user-001'
+
 // 税率を取得するヘルパー関数（0%に対応）
 function getTaxRate(taxRate: number | null | undefined): number {
   return (taxRate !== null && taxRate !== undefined) ? taxRate : 10
@@ -12,13 +15,13 @@ function getTaxRate(taxRate: number | null | undefined): number {
 // 自社情報 API
 // =====================================
 api.get('/company', async (c) => {
-  const result = await c.env.DB.prepare('SELECT * FROM company_info LIMIT 1').first()
+  const result = await c.env.DB.prepare('SELECT * FROM company_info WHERE user_id = ? LIMIT 1').bind(DEMO_USER_ID).first()
   return c.json(result || {})
 })
 
 api.put('/company', async (c) => {
   const data = await c.req.json()
-  const existing = await c.env.DB.prepare('SELECT id FROM company_info LIMIT 1').first()
+  const existing = await c.env.DB.prepare('SELECT id FROM company_info WHERE user_id = ? LIMIT 1').bind(DEMO_USER_ID).first()
   
   // 銀行口座情報をJSON文字列に変換
   const bankAccountsJson = JSON.stringify(data.bank_accounts || [])
@@ -68,6 +71,7 @@ api.put('/company', async (c) => {
   } else {
     await c.env.DB.prepare(`
       INSERT INTO company_info (
+        user_id,
         company_name, department_name, person_name,
         representative_title, representative_name,
         postal_code, address, address_number, building_name,
@@ -85,8 +89,9 @@ api.put('/company', async (c) => {
         default_payment_terms,
         default_delivery_date,
         delivery_note_format
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
+      DEMO_USER_ID,
       data.company_name, data.department_name || '', data.person_name || '',
       data.representative_title || '', data.representative_name || '',
       data.postal_code || '', data.address || '', data.address_number || '', data.building_name || '',
@@ -147,8 +152,8 @@ api.get('/categories/next-code', async (c) => {
 api.get('/categories', async (c) => {
   const search = c.req.query('search')
   
-  let query = 'SELECT * FROM categories WHERE is_active = 1'
-  const params: any[] = []
+  let query = 'SELECT * FROM categories WHERE is_active = 1 AND user_id = ?'
+  const params: any[] = [DEMO_USER_ID]
   
   // 統合検索: 分類コード・分類名・メモを横断検索
   if (search) {
@@ -160,7 +165,7 @@ api.get('/categories', async (c) => {
   query += ' ORDER BY display_order, category_name'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -172,22 +177,23 @@ api.get('/categories/:id', async (c) => {
 
 api.post('/categories', async (c) => {
   const data = await c.req.json()
-  const maxOrder = await c.env.DB.prepare('SELECT MAX(display_order) as max FROM categories').first()
+  const maxOrder = await c.env.DB.prepare('SELECT MAX(display_order) as max FROM categories WHERE user_id = ?').bind(DEMO_USER_ID).first()
   
   // 分類コードが空の場合は自動採番
   let categoryCode = data.category_code
   if (!categoryCode) {
     const result = await c.env.DB.prepare(
-      "SELECT MAX(CAST(SUBSTR(category_code, 2) AS INTEGER)) as max_code FROM categories WHERE category_code LIKE 'C%'"
-    ).first()
+      "SELECT MAX(CAST(SUBSTR(category_code, 2) AS INTEGER)) as max_code FROM categories WHERE category_code LIKE 'C%' AND user_id = ?"
+    ).bind(DEMO_USER_ID).first()
     const nextNum = (result?.max_code || 0) + 1
     categoryCode = 'C' + String(nextNum).padStart(3, '0')
   }
   
   await c.env.DB.prepare(`
-    INSERT INTO categories (category_code, category_name, tax_rate, tax_type, display_order, notes)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO categories (user_id, category_code, category_name, tax_rate, tax_type, display_order, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     categoryCode,
     data.category_name, 
     data.tax_rate || 10, 
@@ -275,9 +281,9 @@ api.get('/products', async (c) => {
     SELECT p.*, c.category_name, c.category_code
     FROM products p 
     LEFT JOIN categories c ON p.category_id = c.id 
-    WHERE p.is_active = 1
+    WHERE p.is_active = 1 AND p.user_id = ?
   `
-  const params: any[] = []
+  const params: any[] = [DEMO_USER_ID]
   
   if (categoryId) {
     query += ' AND p.category_id = ?'
@@ -307,7 +313,7 @@ api.get('/products', async (c) => {
   query += ' ORDER BY c.display_order, p.product_code, p.product_name'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -329,8 +335,8 @@ api.post('/products', async (c) => {
   let productCode = data.product_code
   if (!productCode) {
     const result = await c.env.DB.prepare(
-      "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%'"
-    ).first()
+      "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%' AND user_id = ?"
+    ).bind(DEMO_USER_ID).first()
     const nextNum = (result?.max_code || 0) + 1
     productCode = 'P' + String(nextNum).padStart(4, '0')
   }
@@ -342,11 +348,12 @@ api.post('/products', async (c) => {
   
   await c.env.DB.prepare(`
     INSERT INTO products (
-      product_name, product_code, jan_code, category_id,
+      user_id, product_name, product_code, jan_code, category_id,
       unit_price, cost_price, retail_price, discount_rate,
       tax_rate, min_lot, unit, is_wholesale, remarks, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     data.product_name, productCode, data.jan_code || '',
     data.category_id || null, unitPrice, data.cost_price || 0,
     data.retail_price || 0, data.discount_rate || 100,
@@ -420,8 +427,8 @@ api.get('/clients', async (c) => {
   const search = c.req.query('search')
   const useWholesale = c.req.query('use_wholesale')
   
-  let query = 'SELECT * FROM clients WHERE is_active = 1'
-  const params: any[] = []
+  let query = 'SELECT * FROM clients WHERE is_active = 1 AND user_id = ?'
+  const params: any[] = [DEMO_USER_ID]
   
   // 統合検索: 取引先名・担当者名・代表者名・電話・携帯・メール・締め日を横断検索
   if (search) {
@@ -447,7 +454,7 @@ api.get('/clients', async (c) => {
   query += ' ORDER BY client_code, client_name'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -464,22 +471,23 @@ api.post('/clients', async (c) => {
   let clientCode = data.client_code
   if (!clientCode) {
     const result = await c.env.DB.prepare(
-      'SELECT MAX(CAST(client_code AS INTEGER)) as max_code FROM clients WHERE client_code GLOB "[0-9]*"'
-    ).first()
+      'SELECT MAX(CAST(client_code AS INTEGER)) as max_code FROM clients WHERE client_code GLOB "[0-9]*" AND user_id = ?'
+    ).bind(DEMO_USER_ID).first()
     clientCode = String((result?.max_code || 100) + 1)
   }
   
   await c.env.DB.prepare(`
     INSERT INTO clients (
-      client_name, department_name, postal_code, address,
+      user_id, client_name, department_name, postal_code, address,
       address_number, building_name, client_code, person_name,
       email, closing_day, payment_day, use_wholesale_price, discount_rate,
       tel, fax, mobile, website,
       bank_name, bank_branch, bank_account_type, bank_account_number, bank_account_holder,
       representative_title, representative_name,
       notes, tax_display_setting, is_individual
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     data.client_name, data.department_name || '', data.postal_code || '',
     data.address || '', data.address_number || '', data.building_name || '',
     clientCode, data.person_name || '', data.email || '',
@@ -585,9 +593,9 @@ api.get('/deliveries', async (c) => {
     SELECT d.*, cl.client_name 
     FROM deliveries d 
     LEFT JOIN clients cl ON d.client_id = cl.id 
-    WHERE 1=1
+    WHERE d.user_id = ?
   `
-  const params: any[] = []
+  const params: any[] = [DEMO_USER_ID]
   
   if (clientId) {
     query += ' AND d.client_id = ?'
@@ -613,7 +621,7 @@ api.get('/deliveries', async (c) => {
   query += ' ORDER BY d.delivery_date DESC, d.id DESC'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -675,9 +683,10 @@ api.post('/deliveries', async (c) => {
   
   const result = await c.env.DB.prepare(`
     INSERT INTO deliveries (
-      delivery_no, delivery_date, client_id, subject, subtotal, tax_amount, total_amount, notes, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      user_id, delivery_no, delivery_date, client_id, subject, subtotal, tax_amount, total_amount, notes, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     data.delivery_no, data.delivery_date, data.client_id, data.subject || '',
     subtotal, totalTax, totalAmount, data.notes || '', data.status || 'draft'
   ).run()
@@ -815,9 +824,9 @@ api.get('/estimates', async (c) => {
     SELECT e.*, cl.client_name 
     FROM estimates e 
     LEFT JOIN clients cl ON e.client_id = cl.id 
-    WHERE 1=1
+    WHERE e.user_id = ?
   `
-  const params: any[] = []
+  const params: any[] = [DEMO_USER_ID]
   
   if (clientId) {
     query += ' AND e.client_id = ?'
@@ -844,7 +853,7 @@ api.get('/estimates', async (c) => {
   query += ' ORDER BY e.estimate_date DESC, e.id DESC'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -901,11 +910,12 @@ api.post('/estimates', async (c) => {
   
   const result = await c.env.DB.prepare(`
     INSERT INTO estimates (
-      estimate_no, estimate_date, client_id, valid_until, valid_until_text,
+      user_id, estimate_no, estimate_date, client_id, valid_until, valid_until_text,
       subject, subtotal, tax_amount, total_amount, notes, status,
       delivery_place, payment_terms, delivery_date_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     data.estimate_no, data.estimate_date, data.client_id,
     data.valid_until || null, data.valid_until_text || '',
     data.subject || '',
@@ -1340,11 +1350,12 @@ api.post('/invoices/batch-create', async (c) => {
     // 請求書を作成
     const invoiceResult = await c.env.DB.prepare(`
       INSERT INTO invoices (
-        invoice_no, invoice_date, client_id,
+        user_id, invoice_no, invoice_date, client_id,
         billing_period_start, billing_period_end, payment_due_date,
         subtotal, tax_amount, total_amount, notes, status, bank_info
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
+      DEMO_USER_ID,
       invoiceNo, now.toISOString().split('T')[0], clientId,
       start, end, paymentDueDate,
       subtotal, totalTax, totalAmount, '', 'draft', bank_info || ''
@@ -1401,9 +1412,9 @@ api.get('/invoices', async (c) => {
     SELECT i.*, cl.client_name 
     FROM invoices i 
     LEFT JOIN clients cl ON i.client_id = cl.id 
-    WHERE 1=1
+    WHERE i.user_id = ?
   `
-  const params: any[] = []
+  const params: any[] = [DEMO_USER_ID]
   
   if (clientId) {
     query += ' AND i.client_id = ?'
@@ -1429,7 +1440,7 @@ api.get('/invoices', async (c) => {
   query += ' ORDER BY i.invoice_date DESC, i.id DESC'
   
   const stmt = c.env.DB.prepare(query)
-  const result = params.length > 0 ? await stmt.bind(...params).all() : await stmt.all()
+  const result = await stmt.bind(...params).all()
   return c.json(result.results)
 })
 
@@ -1474,11 +1485,12 @@ api.post('/invoices', async (c) => {
   
   const result = await c.env.DB.prepare(`
     INSERT INTO invoices (
-      invoice_no, invoice_date, client_id, 
+      user_id, invoice_no, invoice_date, client_id, 
       billing_period_start, billing_period_end, closing_date, payment_due_date,
       subtotal, tax_amount, total_amount, notes, status, bank_info
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
+    DEMO_USER_ID,
     data.invoice_no, data.invoice_date, data.client_id,
     data.billing_period_start || null, data.billing_period_end || null,
     data.closing_date || null, data.payment_due_date || null,
