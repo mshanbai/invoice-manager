@@ -1,3 +1,5 @@
+// Vercel Build v2
+// 標準的なSPAビルド設定（Cloudflare設定は削除済み）
 import { defineConfig } from 'vite'
 
 export default defineConfig({
@@ -5,7 +7,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
-  // 開発サーバーの設定
   server: {
     port: 5173,
   }
