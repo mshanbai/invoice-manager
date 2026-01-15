@@ -3235,7 +3235,7 @@ app.get('/deliveries', async (c) => {
                   <div class="md:col-span-1">
                     <label class="block text-sm font-medium text-gray-700 mb-1">納品番号 *</label>
                     <div class="flex gap-1">
-                      <input type="text" name="delivery_no" required
+                      <input type="text" name="delivery_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                       <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
                         <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
@@ -3244,7 +3244,7 @@ app.get('/deliveries', async (c) => {
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">納品日 *</label>
-                    <input type="date" name="delivery_date" required
+                    <input type="date" name="delivery_date"
                       class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                   </div>
                   <div>
@@ -3278,7 +3278,7 @@ app.get('/deliveries', async (c) => {
                           </button>
                         </div>
                         {/* 従来のプルダウン（非表示だがフォーム送信用） */}
-                        <select name="client_id" id="clientSelect" required class="hidden">
+                        <select name="client_id" id="clientSelect" class="hidden">
                           <option value="">得意先を選択...</option>
                         </select>
                         {/* 選択された得意先の表示 */}
@@ -4242,17 +4242,13 @@ app.get('/deliveries', async (c) => {
         // 保存
         async function saveDelivery() {
           var form = document.getElementById('deliveryForm');
-          if (!form.checkValidity()) {
-            form.reportValidity();
+          var clientIdValue = form.querySelector('[name="client_id"]').value;
+          if (!clientIdValue) {
+            window.SmartBill.showErrorDialog('得意先を選択してください。');
             return;
           }
           
-          // 有効な明細があるかチェック
           var validItems = items.filter(function(item) { return item.product_name && item.quantity > 0; });
-          if (validItems.length === 0) {
-            alert('明細を1件以上入力してください');
-            return;
-          }
           
           // 納品済み以降のステータスで内容変更時の警告
           var deliveredOrLaterStatuses = ['delivered', 'invoiced'];
@@ -4294,7 +4290,7 @@ app.get('/deliveries', async (c) => {
             document.getElementById('pdfDeliveryBtn').classList.remove('hidden');
             document.getElementById('newDeliveryBtnDetail').classList.remove('hidden');
           } catch (e) {
-            alert('保存に失敗しました');
+            window.SmartBill.showErrorDialog('納品の保存に失敗しました');
             console.error(e);
           }
         }
@@ -4765,7 +4761,7 @@ app.get('/estimates', async (c) => {
                   <div class="md:col-span-2 lg:col-span-1">
                     <label class="block text-sm font-medium text-gray-700 mb-1">見積番号 *</label>
                     <div class="flex gap-1">
-                      <input type="text" name="estimate_no" required
+                      <input type="text" name="estimate_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                       <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
                         <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
@@ -4774,7 +4770,7 @@ app.get('/estimates', async (c) => {
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">見積日 *</label>
-                    <input type="date" name="estimate_date" required
+                    <input type="date" name="estimate_date"
                       class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                   </div>
                   <div>
@@ -4814,7 +4810,7 @@ app.get('/estimates', async (c) => {
                           </button>
                         </div>
                         {/* 従来のプルダウン（非表示だがフォーム送信用） */}
-                        <select name="client_id" id="clientSelect" required class="hidden">
+                        <select name="client_id" id="clientSelect" class="hidden">
                           <option value="">得意先を選択...</option>
                         </select>
                         {/* 選択された得意先の表示 */}
@@ -5774,17 +5770,13 @@ app.get('/estimates', async (c) => {
         // 保存
         async function saveEstimate() {
           var form = document.getElementById('estimateForm');
-          if (!form.checkValidity()) {
-            form.reportValidity();
+          var clientIdValue = form.querySelector('[name="client_id"]').value;
+          if (!clientIdValue) {
+            window.SmartBill.showErrorDialog('得意先を選択してください。');
             return;
           }
           
-          // 有効な明細があるかチェック
           var validItems = items.filter(function(item) { return item.product_name && item.quantity > 0; });
-          if (validItems.length === 0) {
-            alert('明細を1件以上入力してください');
-            return;
-          }
           
           // 送付済み以降のステータスで内容変更時の警告
           var sentOrLaterStatuses = ['sent', 'accepted', 'rejected'];
@@ -5840,7 +5832,7 @@ app.get('/estimates', async (c) => {
             document.getElementById('duplicateEstimateBtn').classList.remove('hidden');
             document.getElementById('pdfEstimateBtn').classList.remove('hidden');
           } catch (e) {
-            alert('保存に失敗しました');
+            window.SmartBill.showErrorDialog('見積の保存に失敗しました');
             console.error(e);
           }
         }
@@ -6310,7 +6302,7 @@ app.get('/invoices', async (c) => {
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">請求番号 *</label>
                     <div class="flex gap-1">
-                      <input type="text" name="invoice_no" required
+                      <input type="text" name="invoice_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                       <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
                         <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
@@ -6319,7 +6311,7 @@ app.get('/invoices', async (c) => {
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">請求日 *</label>
-                    <input type="date" name="invoice_date" required
+                    <input type="date" name="invoice_date"
                       class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                   </div>
                   <div>
@@ -6356,7 +6348,7 @@ app.get('/invoices', async (c) => {
                             <i class="fas fa-chevron-down"></i>
                           </button>
                         </div>
-                        <select name="client_id" id="clientSelect" required class="hidden">
+                        <select name="client_id" id="clientSelect" class="hidden">
                           <option value="">得意先を選択...</option>
                         </select>
                         <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-blue-50 rounded-lg flex items-center justify-between">
@@ -7238,16 +7230,13 @@ app.get('/invoices', async (c) => {
         // 保存
         async function saveInvoice() {
           var form = document.getElementById('invoiceForm');
-          if (!form.checkValidity()) {
-            form.reportValidity();
+          var clientIdValue = form.querySelector('[name="client_id"]').value;
+          if (!clientIdValue) {
+            window.SmartBill.showErrorDialog('得意先を選択してください。');
             return;
           }
           
           var validItems = items.filter(function(item) { return item.product_name && item.quantity > 0; });
-          if (validItems.length === 0) {
-            alert('明細を1件以上入力してください');
-            return;
-          }
           
           // 送付済み以降の編集時の警告
           var sentOrLaterStatuses = ['sent', 'paid', 'overdue'];
@@ -7293,7 +7282,7 @@ app.get('/invoices', async (c) => {
             document.getElementById('pdfInvoiceBtn').classList.remove('hidden');
             document.getElementById('newInvoiceBtnDetail').classList.remove('hidden');
           } catch (e) {
-            alert('保存に失敗しました');
+            window.SmartBill.showErrorDialog('請求書の保存に失敗しました');
             console.error(e);
           }
         }

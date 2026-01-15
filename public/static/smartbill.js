@@ -365,6 +365,18 @@ window.SmartBill.showSuccessDialog = function(message) {
   });
 };
 
+// 保存失敗ダイアログ（成功モーダルと同UI）
+window.SmartBill.showErrorDialog = function(message) {
+  return window.SmartBill.showConfirmDialog({
+    title: '保存失敗',
+    message: message || '保存に失敗しました。',
+    confirmText: 'OK',
+    cancelText: '',
+    icon: 'fa-times-circle',
+    type: 'danger'
+  });
+};
+
 // =====================================
 // サイドバー開閉機能
 // =====================================

@@ -2,7 +2,7 @@
   "name": "smartbill",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --config vite.config.cloudflare.ts",
     "dev:cloudflare": "vite --config vite.config.cloudflare.ts",
     "build": "vite build",
     "preview": "vite preview",
