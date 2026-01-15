@@ -6,6 +6,16 @@ window.SmartBill = {
   pendingNavigation: null
 };
 
+window.SmartBill.normalizeJan = function(value) {
+  if (value === null || value === undefined || value === '') return '';
+  return String(value).replace(/\D/g, '');
+};
+
+window.SmartBill.normalizeProductCode = function(value) {
+  if (value === null || value === undefined || value === '') return '';
+  return String(value).trim();
+};
+
 // DOM読み込み後に実行
 document.addEventListener('DOMContentLoaded', function() {
   // サイドバートグル

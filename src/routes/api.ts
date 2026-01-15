@@ -11,6 +11,29 @@ function getTaxRate(taxRate: number | null | undefined): number {
   return (taxRate !== null && taxRate !== undefined) ? taxRate : 10
 }
 
+function normalizeJan(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return String(value).replace(/\D/g, '')
+}
+
+function normalizeProductCode(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return String(value).trim()
+}
+
+function isValidDateString(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const d = new Date(value + 'T00:00:00Z')
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(value)
+}
+
+function parseNonNegativeNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  if (Number.isNaN(n) || n < 0) return null
+  return n
+}
+
 // =====================================
 // 自社情報 API
 // =====================================
@@ -317,6 +340,85 @@ api.get('/products', async (c) => {
   return c.json(result.results)
 })
 
+api.get('/products/export.csv', async (c) => {
+  const productsResult = await c.env.DB.prepare(`
+    SELECT p.*, c.category_name, c.category_code
+    FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.is_active = 1 AND p.user_id = ?
+    ORDER BY c.display_order, p.product_code, p.product_name
+  `).bind(DEMO_USER_ID).all()
+  
+  const products = productsResult.results as any[]
+  const headers: string[] = [
+    'product_code',
+    'product_name',
+    'jan_code',
+    'category_name',
+    'unit_price',
+    'retail_price',
+    'cost_price'
+  ]
+  
+  for (let i = 1; i <= 5; i++) {
+    headers.push(`price_history_${i}_effective_date`)
+    headers.push(`price_history_${i}_cost_price`)
+    headers.push(`price_history_${i}_wholesale_price`)
+    headers.push(`price_history_${i}_list_price`)
+  }
+  
+  function escapeCsv(value: unknown): string {
+    if (value === null || value === undefined) return ''
+    const str = String(value)
+    if (/[",\n]/.test(str)) {
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+  
+  const rows: string[] = []
+  rows.push(headers.join(','))
+  
+  for (const product of products) {
+    const historyResult = await c.env.DB.prepare(`
+      SELECT effective_date, cost_price, wholesale_price, list_price
+      FROM product_price_histories
+      WHERE product_id = ?
+      ORDER BY effective_date DESC
+      LIMIT 5
+    `).bind(product.id).all()
+    
+    const history = historyResult.results as any[]
+    const row: string[] = [
+      product.product_code || '',
+      product.product_name || '',
+      product.jan_code || '',
+      product.category_name || '',
+      product.unit_price ?? '',
+      product.retail_price ?? '',
+      product.cost_price ?? ''
+    ]
+    
+    for (let i = 0; i < 5; i++) {
+      const item = history[i]
+      row.push(item ? item.effective_date : '')
+      row.push(item ? item.cost_price : '')
+      row.push(item ? item.wholesale_price : '')
+      row.push(item ? item.list_price : '')
+    }
+    
+    rows.push(row.map(escapeCsv).join(','))
+  }
+  
+  const csv = rows.join('\n')
+  return new Response(csv, {
+    headers: {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': 'attachment; filename="products_with_price_history.csv"'
+    }
+  })
+})
+
 api.get('/products/:id', async (c) => {
   const id = c.req.param('id')
   const result = await c.env.DB.prepare(`
@@ -328,11 +430,155 @@ api.get('/products/:id', async (c) => {
   return c.json(result)
 })
 
+api.get('/products/:id/price-history', async (c) => {
+  const id = c.req.param('id')
+  const limitParam = c.req.query('limit')
+  const limit = limitParam ? Math.max(1, parseInt(limitParam)) : 3
+  
+  const result = await c.env.DB.prepare(`
+    SELECT h.*
+    FROM product_price_histories h
+    INNER JOIN products p ON p.id = h.product_id
+    WHERE h.product_id = ? AND p.user_id = ?
+    ORDER BY h.effective_date DESC
+    LIMIT ?
+  `).bind(id, DEMO_USER_ID, limit).all()
+  
+  return c.json(result.results)
+})
+
+api.post('/products/:id/price-history', async (c) => {
+  const productId = c.req.param('id')
+  const data = await c.req.json()
+  
+  const product = await c.env.DB.prepare(
+    'SELECT id FROM products WHERE id = ? AND user_id = ?'
+  ).bind(productId, DEMO_USER_ID).first()
+  
+  if (!product) {
+    return c.json({ error: '商品が見つかりません' }, 404)
+  }
+  
+  const effectiveDate = String(data.effective_date || '')
+  if (!effectiveDate) {
+    return c.json({ error: '適用日を入力してください' }, 400)
+  }
+  if (!isValidDateString(effectiveDate)) {
+    return c.json({ error: '適用日の形式が不正です' }, 400)
+  }
+  
+  const costPrice = parseNonNegativeNumber(data.cost_price)
+  if (costPrice === null) {
+    return c.json({ error: '原価を入力してください' }, 400)
+  }
+  const wholesalePrice = parseNonNegativeNumber(data.wholesale_price)
+  if (wholesalePrice === null) {
+    return c.json({ error: '下代を入力してください' }, 400)
+  }
+  const listPrice = parseNonNegativeNumber(data.list_price)
+  if (listPrice === null) {
+    return c.json({ error: '上代を入力してください' }, 400)
+  }
+  
+  const historyId = crypto.randomUUID()
+  try {
+    await c.env.DB.prepare(`
+      INSERT INTO product_price_histories (
+        id, product_id, effective_date, cost_price, wholesale_price, list_price
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      historyId, productId, effectiveDate, costPrice, wholesalePrice, listPrice
+    ).run()
+  } catch (e) {
+    const message = String(e)
+    if (/unique/i.test(message)) {
+      return c.json({ error: '同じ適用日の履歴が既にあります' }, 409)
+    }
+    throw e
+  }
+  
+  return c.json({ success: true, id: historyId })
+})
+
+api.put('/products/:id/price-history/:historyId', async (c) => {
+  const productId = c.req.param('id')
+  const historyId = c.req.param('historyId')
+  const data = await c.req.json()
+  
+  const product = await c.env.DB.prepare(
+    'SELECT id FROM products WHERE id = ? AND user_id = ?'
+  ).bind(productId, DEMO_USER_ID).first()
+  
+  if (!product) {
+    return c.json({ error: '商品が見つかりません' }, 404)
+  }
+  
+  const effectiveDate = String(data.effective_date || '')
+  if (!effectiveDate) {
+    return c.json({ error: '適用日を入力してください' }, 400)
+  }
+  if (!isValidDateString(effectiveDate)) {
+    return c.json({ error: '適用日の形式が不正です' }, 400)
+  }
+  
+  const costPrice = parseNonNegativeNumber(data.cost_price)
+  if (costPrice === null) {
+    return c.json({ error: '原価を入力してください' }, 400)
+  }
+  const wholesalePrice = parseNonNegativeNumber(data.wholesale_price)
+  if (wholesalePrice === null) {
+    return c.json({ error: '下代を入力してください' }, 400)
+  }
+  const listPrice = parseNonNegativeNumber(data.list_price)
+  if (listPrice === null) {
+    return c.json({ error: '上代を入力してください' }, 400)
+  }
+  
+  try {
+    await c.env.DB.prepare(`
+      UPDATE product_price_histories SET
+        effective_date = ?, cost_price = ?, wholesale_price = ?, list_price = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND product_id = ?
+    `).bind(
+      effectiveDate, costPrice, wholesalePrice, listPrice, historyId, productId
+    ).run()
+  } catch (e) {
+    const message = String(e)
+    if (/unique/i.test(message)) {
+      return c.json({ error: '同じ適用日の履歴が既にあります' }, 409)
+    }
+    throw e
+  }
+  
+  return c.json({ success: true })
+})
+
+api.delete('/products/:id/price-history/:historyId', async (c) => {
+  const productId = c.req.param('id')
+  const historyId = c.req.param('historyId')
+  
+  const product = await c.env.DB.prepare(
+    'SELECT id FROM products WHERE id = ? AND user_id = ?'
+  ).bind(productId, DEMO_USER_ID).first()
+  
+  if (!product) {
+    return c.json({ error: '商品が見つかりません' }, 404)
+  }
+  
+  await c.env.DB.prepare(`
+    DELETE FROM product_price_histories
+    WHERE id = ? AND product_id = ?
+  `).bind(historyId, productId).run()
+  
+  return c.json({ success: true })
+})
+
 api.post('/products', async (c) => {
   const data = await c.req.json()
   
   // 商品コードが空の場合は自動採番
-  let productCode = data.product_code
+  let productCode = normalizeProductCode(data.product_code)
   if (!productCode) {
     const result = await c.env.DB.prepare(
       "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%' AND user_id = ?"
@@ -340,6 +586,8 @@ api.post('/products', async (c) => {
     const nextNum = (result?.max_code || 0) + 1
     productCode = 'P' + String(nextNum).padStart(4, '0')
   }
+  
+  const janCode = normalizeJan(data.jan_code)
   
   // 下代計算: 上代 × 掛け率 / 100
   const unitPrice = data.is_wholesale 
@@ -354,7 +602,7 @@ api.post('/products', async (c) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     DEMO_USER_ID,
-    data.product_name, productCode, data.jan_code || '',
+    data.product_name, productCode, janCode,
     data.category_id || null, unitPrice, data.cost_price || 0,
     data.retail_price || 0, data.discount_rate || 100,
     data.tax_rate || null, data.min_lot || 1, data.unit || '個',
@@ -367,6 +615,17 @@ api.post('/products', async (c) => {
 api.put('/products/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
+  
+  let productCode = normalizeProductCode(data.product_code)
+  if (!productCode) {
+    const result = await c.env.DB.prepare(
+      "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%' AND user_id = ?"
+    ).bind(DEMO_USER_ID).first()
+    const nextNum = (result?.max_code || 0) + 1
+    productCode = 'P' + String(nextNum).padStart(4, '0')
+  }
+  
+  const janCode = normalizeJan(data.jan_code)
   
   // 下代計算: 上代 × 掛け率 / 100
   const unitPrice = data.is_wholesale 
@@ -381,7 +640,7 @@ api.put('/products/:id', async (c) => {
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).bind(
-    data.product_name, data.product_code || '', data.jan_code || '',
+    data.product_name, productCode, janCode,
     data.category_id || null, unitPrice, data.cost_price || 0,
     data.retail_price || 0, data.discount_rate || 100,
     data.tax_rate || null, data.min_lot || 1, data.unit || '個',

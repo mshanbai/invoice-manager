@@ -2242,9 +2242,14 @@ app.get('/products', async (c) => {
                   <i class="fas fa-times"></i>
                 </button>
               </div>
-              <button id="newProductBtnTable" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg">
-                <i class="fas fa-plus mr-2"></i>新規登録
-              </button>
+              <div class="flex items-center gap-2">
+                <button id="exportProductsCsvBtn" class="bg-white hover:bg-gray-50 text-gray-700 font-bold py-2 px-4 rounded-lg border border-gray-300">
+                  <i class="fas fa-file-csv mr-2"></i>CSV出力
+                </button>
+                <button id="newProductBtnTable" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg">
+                  <i class="fas fa-plus mr-2"></i>新規登録
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2331,6 +2336,7 @@ app.get('/products', async (c) => {
         var searchResultCount = document.getElementById('searchResultCount');
         var productTableBody = document.getElementById('productTableBody');
         var newProductBtnTable = document.getElementById('newProductBtnTable');
+        var exportProductsCsvBtn = document.getElementById('exportProductsCsvBtn');
         
         var searchInput = document.getElementById('searchInput');
         var productListContainer = document.getElementById('productListContainer');
@@ -2532,6 +2538,10 @@ app.get('/products', async (c) => {
           });
         }
         
+        function exportProductsCsv() {
+          window.location.href = '/api/products/export.csv';
+        }
+        
         // 最近編集した商品を描画
         function renderRecentProducts() {
           if (recentProducts.length === 0) {
@@ -2649,10 +2659,12 @@ app.get('/products', async (c) => {
             '</div>' +
             '</div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">商品コード <span class="text-xs text-blue-600">※空欄で自動採番</span></label>' +
-            '<div class="flex gap-2"><input type="text" name="product_code" value="' + (data ? (data.product_code || '') : '') + '" placeholder="自動採番" class="flex-1 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            (isNew ? '<button type="button" id="getNextCode" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm">次の番号</button>' : '') + '</div></div>' +
+            '<div class="flex gap-2"><input type="text" name="product_code" id="productCodeInput" value="' + (data ? (data.product_code || '') : '') + '" placeholder="自動採番" class="flex-1 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            (isNew ? '<button type="button" id="getNextCode" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm">次の番号</button>' : '') + '</div>' +
+            '<p id="productCodeError" class="mt-1 text-sm text-red-600 hidden"></p></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">JANコード</label>' +
-            '<input type="text" name="jan_code" value="' + (data ? (data.jan_code || '') : '') + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
+            '<input type="text" name="jan_code" id="janCodeInput" value="' + (data ? (data.jan_code || '') : '') + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="janCodeError" class="mt-1 text-sm text-red-600 hidden"></p></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">分類</label>' +
             '<select name="category_id" id="categorySelect" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500">' + categoryOptions + '</select></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">税率 <span class="text-xs text-gray-500">（分類から自動反映）</span></label>' +
@@ -2704,6 +2716,43 @@ app.get('/products', async (c) => {
             '</div></div></div>' +
             '</div>' +
             
+            // 単価変更履歴
+            '<div class="bg-white rounded-lg border border-gray-200 p-5">' +
+            '<h3 class="text-lg font-bold mb-4 text-gray-800"><i class="fas fa-history mr-2 text-blue-600"></i>単価変更履歴（適用日ベース）</h3>' +
+            '<div class="mb-4 text-xs text-gray-500">最新3件を表示します。未来日も予約単価として表示されます。</div>' +
+            '<div id="priceHistoryList" class="space-y-3">' +
+            '<div id="priceHistoryEmpty" class="text-sm text-gray-400">履歴がありません</div>' +
+            '</div>' +
+            '<div class="mt-5 border-t pt-4">' +
+            '<div class="grid grid-cols-1 md:grid-cols-4 gap-4">' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">適用日 *</label>' +
+            '<input type="date" id="priceHistoryEffectiveDate" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryEffectiveDateError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">原価 *</label>' +
+            '<input type="number" id="priceHistoryCostPrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryCostPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">下代 *</label>' +
+            '<input type="number" id="priceHistoryWholesalePrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryWholesalePriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">上代 *</label>' +
+            '<input type="number" id="priceHistoryListPrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryListPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '</div>' +
+            '<div class="mt-4 flex items-center gap-2">' +
+            '<button type="button" id="addPriceHistoryBtn" class="' + (isNew ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 hover:bg-blue-700 text-white') + ' font-bold py-2 px-4 rounded-lg text-sm" ' + (isNew ? 'disabled' : '') + '>履歴追加</button>' +
+            (isNew ? '<span class="text-xs text-gray-400">※保存後に追加できます</span>' : '') +
+            '</div>' +
+            '</div>' +
+            '</div>' +
+            
             // 備考・メモ
             '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">' +
             '<div>' +
@@ -2740,6 +2789,109 @@ app.get('/products', async (c) => {
           var unitPriceInput = document.getElementById('unitPriceInput');
           var costPriceNormal = document.getElementById('costPriceNormal');
           var costRateNormalDisplay = document.getElementById('costRateNormalDisplay');
+          var productCodeInput = document.getElementById('productCodeInput');
+          var janCodeInput = document.getElementById('janCodeInput');
+          var productCodeError = document.getElementById('productCodeError');
+          var janCodeError = document.getElementById('janCodeError');
+          
+          function showFieldError(element, message) {
+            if (!element) return;
+            element.textContent = message;
+            element.classList.remove('hidden');
+          }
+          
+          function clearFieldError(element) {
+            if (!element) return;
+            element.textContent = '';
+            element.classList.add('hidden');
+          }
+          
+          function showSaveErrorDialog() {
+            window.SmartBill.showConfirmDialog({
+              title: 'エラー',
+              message: 'データの保存に失敗しました。<br/>もう一度お試しください。',
+              confirmText: 'OK',
+              cancelText: '',
+              icon: 'fa-times-circle',
+              type: 'danger'
+            });
+          }
+          
+          if (productCodeInput) {
+            productCodeInput.addEventListener('input', function() {
+              clearFieldError(productCodeError);
+            });
+          }
+          
+          if (janCodeInput) {
+            janCodeInput.addEventListener('input', function() {
+              clearFieldError(janCodeError);
+            });
+          }
+          
+          async function checkDuplicateProductCode() {
+            if (!productCodeInput) return;
+            var normalized = window.SmartBill.normalizeProductCode(productCodeInput.value);
+            if (!normalized) {
+              clearFieldError(productCodeError);
+              return;
+            }
+            
+            try {
+              var allProductsRes = await axios.get('/api/products');
+              var allProducts = allProductsRes.data || [];
+              var hasDuplicate = allProducts.some(function(p) {
+                if (!isNew && p.id === currentProductId) return false;
+                return window.SmartBill.normalizeProductCode(p.product_code) === normalized;
+              });
+              
+              if (hasDuplicate) {
+                showFieldError(productCodeError, '商品コードが重複しています');
+              } else {
+                clearFieldError(productCodeError);
+              }
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          
+          async function checkDuplicateJanCode() {
+            if (!janCodeInput) return;
+            var normalized = window.SmartBill.normalizeJan(janCodeInput.value);
+            if (!normalized) {
+              clearFieldError(janCodeError);
+              return;
+            }
+            
+            try {
+              var allProductsRes = await axios.get('/api/products');
+              var allProducts = allProductsRes.data || [];
+              var hasDuplicate = allProducts.some(function(p) {
+                if (!isNew && p.id === currentProductId) return false;
+                return window.SmartBill.normalizeJan(p.jan_code) === normalized;
+              });
+              
+              if (hasDuplicate) {
+                showFieldError(janCodeError, 'JANコードが重複しています');
+              } else {
+                clearFieldError(janCodeError);
+              }
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          
+          if (productCodeInput) {
+            productCodeInput.addEventListener('blur', function() {
+              checkDuplicateProductCode();
+            });
+          }
+          
+          if (janCodeInput) {
+            janCodeInput.addEventListener('blur', function() {
+              checkDuplicateJanCode();
+            });
+          }
           
           // 分類変更で税率を自動反映
           categorySelect.addEventListener('change', function() {
@@ -2960,8 +3112,10 @@ app.get('/products', async (c) => {
           }
           
           // フォーム送信
-          document.getElementById('productForm').addEventListener('submit', function(e) {
+          document.getElementById('productForm').addEventListener('submit', async function(e) {
             e.preventDefault();
+            clearFieldError(productCodeError);
+            clearFieldError(janCodeError);
             var formData = new FormData(this);
             var sendData = Object.fromEntries(formData);
             
@@ -2978,6 +3132,63 @@ app.get('/products', async (c) => {
               sendData.cost_price = parseFloat(document.getElementById('costPriceWholesale').value) || 0;
             } else {
               sendData.cost_price = parseFloat(document.getElementById('costPriceNormal').value) || 0;
+            }
+            
+            var normalizedProductCode = window.SmartBill.normalizeProductCode(sendData.product_code);
+            if (!normalizedProductCode) {
+              try {
+                var nextCodeRes = await axios.get('/api/products/next-code');
+                normalizedProductCode = nextCodeRes.data.next_code || '';
+              } catch (e) {
+                showSaveErrorDialog();
+                console.error(e);
+                return;
+              }
+            }
+            
+            if (!normalizedProductCode) {
+              showSaveErrorDialog();
+              return;
+            }
+            
+            sendData.product_code = normalizedProductCode;
+            if (productCodeInput) productCodeInput.value = normalizedProductCode;
+            
+            var normalizedJan = window.SmartBill.normalizeJan(sendData.jan_code);
+            sendData.jan_code = normalizedJan;
+            
+            var allProducts;
+            try {
+              var allProductsRes = await axios.get('/api/products');
+              allProducts = allProductsRes.data || [];
+            } catch (e) {
+              showSaveErrorDialog();
+              console.error(e);
+              return;
+            }
+            
+            var isSameProduct = function(p) {
+              return !isNew && p.id === currentProductId;
+            };
+            
+            var hasDuplicateProductCode = allProducts.some(function(p) {
+              return !isSameProduct(p) && window.SmartBill.normalizeProductCode(p.product_code) === normalizedProductCode;
+            });
+            
+            if (hasDuplicateProductCode) {
+              showFieldError(productCodeError, '商品コードが重複しています');
+              return;
+            }
+            
+            if (normalizedJan !== '') {
+              var hasDuplicateJan = allProducts.some(function(p) {
+                return !isSameProduct(p) && window.SmartBill.normalizeJan(p.jan_code) === normalizedJan;
+              });
+              
+              if (hasDuplicateJan) {
+                showFieldError(janCodeError, 'JANコードが重複しています');
+                return;
+              }
             }
             
             var method = isNew ? 'post' : 'put';
@@ -2997,14 +3208,27 @@ app.get('/products', async (c) => {
               }
               window.SmartBill.showSuccessDialog('商品情報を保存しました。');
             }).catch(function(e) {
-              window.SmartBill.showConfirmDialog({
-                title: 'エラー',
-                message: 'データの保存に失敗しました。<br/>もう一度お試しください。',
-                confirmText: 'OK',
-                cancelText: '',
-                icon: 'fa-times-circle',
-                type: 'danger'
-              });
+              var errorMessage = '';
+              if (e && e.response && e.response.data) {
+                errorMessage = JSON.stringify(e.response.data);
+              } else if (e && e.message) {
+                errorMessage = e.message;
+              } else {
+                errorMessage = String(e);
+              }
+              
+              if (/unique/i.test(errorMessage) || /constraint/i.test(errorMessage)) {
+                if (/product_code/i.test(errorMessage)) {
+                  showFieldError(productCodeError, '商品コードが重複しています');
+                  return;
+                }
+                if (/jan_code/i.test(errorMessage)) {
+                  showFieldError(janCodeError, 'JANコードが重複しています');
+                  return;
+                }
+              }
+              
+              showSaveErrorDialog();
               console.error(e);
             });
           });
@@ -3034,6 +3258,9 @@ app.get('/products', async (c) => {
         
         clearFiltersBtn.addEventListener('click', clearFilters);
         newProductBtnTable.addEventListener('click', showNewForm);
+        if (exportProductsCsvBtn) {
+          exportProductsCsvBtn.addEventListener('click', exportProductsCsv);
+        }
         newProductBtn.addEventListener('click', showNewForm);
         backToListBtn.addEventListener('click', showTableView);
         
