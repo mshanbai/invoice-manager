@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import type { Bindings } from '../types'
+import { supabase } from '../lib/supabaseClient'
 
-const api = new Hono<{ Bindings: Bindings }>()
+const api = new Hono()
 
 // SaaS用: 開発中は仮のユーザーIDを使用
 const DEMO_USER_ID = 'demo-user-001'
@@ -38,101 +38,112 @@ function parseNonNegativeNumber(value: unknown): number | null {
 // 自社情報 API
 // =====================================
 api.get('/company', async (c) => {
-  const result = await c.env.DB.prepare('SELECT * FROM company_info WHERE user_id = ? LIMIT 1').bind(DEMO_USER_ID).first()
-  return c.json(result || {})
+  const { data, error } = await supabase
+    .from('company_info')
+    .select('*')
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (error) throw error
+  return c.json(data || {})
 })
 
 api.put('/company', async (c) => {
   const data = await c.req.json()
-  const existing = await c.env.DB.prepare('SELECT id FROM company_info WHERE user_id = ? LIMIT 1').bind(DEMO_USER_ID).first()
+  const { data: existing, error: existingError } = await supabase
+    .from('company_info')
+    .select('id')
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (existingError) throw existingError
   
   // 銀行口座情報をJSON文字列に変換
   const bankAccountsJson = JSON.stringify(data.bank_accounts || [])
   
   if (existing) {
-    await c.env.DB.prepare(`
-      UPDATE company_info SET
-        company_name = ?, department_name = ?, person_name = ?,
-        representative_title = ?, representative_name = ?,
-        postal_code = ?, address = ?, address_number = ?, building_name = ?,
-        tel = ?, fax = ?, email = ?, website = ?,
-        invoice_registration_no = ?,
-        logo_url = ?, stamp_url = ?,
-        bank_name = ?, bank_branch = ?, account_type = ?, account_number = ?, account_holder = ?,
-        bank_accounts = ?,
-        default_bank_account_index = ?,
-        default_tax_type = ?, default_tax_rate = ?,
-        default_closing_day = ?, default_payment_day = ?,
-        show_tax_on_estimate_delivery = ?,
-        estimate_valid_days = ?,
-        default_delivery_place = ?,
-        default_payment_terms = ?,
-        default_delivery_date = ?,
-        delivery_note_format = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).bind(
-      data.company_name, data.department_name || '', data.person_name || '',
-      data.representative_title || '', data.representative_name || '',
-      data.postal_code || '', data.address || '', data.address_number || '', data.building_name || '',
-      data.tel || '', data.fax || '', data.email || '', data.website || '',
-      data.invoice_registration_no || '',
-      data.logo_url || '', data.stamp_url || '',
-      data.bank_name || '', data.bank_branch || '', data.account_type || '', data.account_number || '', data.account_holder || '',
-      bankAccountsJson,
-      data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
-      data.default_tax_type || 'standard', data.default_tax_rate || 10,
-      data.default_closing_day || '', data.default_payment_day || '',
-      data.show_tax_on_estimate_delivery ? 1 : 0,
-      data.estimate_valid_days || 30,
-      data.default_delivery_place || '',
-      data.default_payment_terms || '',
-      data.default_delivery_date || '',
-      data.delivery_note_format || 'half',
-      existing.id
-    ).run()
+    const { error } = await supabase
+      .from('company_info')
+      .update({
+        company_name: data.company_name,
+        department_name: data.department_name || '',
+        person_name: data.person_name || '',
+        representative_title: data.representative_title || '',
+        representative_name: data.representative_name || '',
+        postal_code: data.postal_code || '',
+        address: data.address || '',
+        address_number: data.address_number || '',
+        building_name: data.building_name || '',
+        tel: data.tel || '',
+        fax: data.fax || '',
+        email: data.email || '',
+        website: data.website || '',
+        invoice_registration_no: data.invoice_registration_no || '',
+        logo_url: data.logo_url || '',
+        stamp_url: data.stamp_url || '',
+        bank_name: data.bank_name || '',
+        bank_branch: data.bank_branch || '',
+        account_type: data.account_type || '',
+        account_number: data.account_number || '',
+        account_holder: data.account_holder || '',
+        bank_accounts: bankAccountsJson,
+        default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
+        default_tax_type: data.default_tax_type || 'standard',
+        default_tax_rate: data.default_tax_rate || 10,
+        default_closing_day: data.default_closing_day || '',
+        default_payment_day: data.default_payment_day || '',
+        show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
+        estimate_valid_days: data.estimate_valid_days || 30,
+        default_delivery_place: data.default_delivery_place || '',
+        default_payment_terms: data.default_payment_terms || '',
+        default_delivery_date: data.default_delivery_date || '',
+        delivery_note_format: data.delivery_note_format || 'half',
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', existing.id)
+
+    if (error) throw error
   } else {
-    await c.env.DB.prepare(`
-      INSERT INTO company_info (
-        user_id,
-        company_name, department_name, person_name,
-        representative_title, representative_name,
-        postal_code, address, address_number, building_name,
-        tel, fax, email, website,
-        invoice_registration_no,
-        logo_url, stamp_url,
-        bank_name, bank_branch, account_type, account_number, account_holder,
-        bank_accounts,
-        default_bank_account_index,
-        default_tax_type, default_tax_rate,
-        default_closing_day, default_payment_day,
-        show_tax_on_estimate_delivery,
-        estimate_valid_days,
-        default_delivery_place,
-        default_payment_terms,
-        default_delivery_date,
-        delivery_note_format
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      DEMO_USER_ID,
-      data.company_name, data.department_name || '', data.person_name || '',
-      data.representative_title || '', data.representative_name || '',
-      data.postal_code || '', data.address || '', data.address_number || '', data.building_name || '',
-      data.tel || '', data.fax || '', data.email || '', data.website || '',
-      data.invoice_registration_no || '',
-      data.logo_url || '', data.stamp_url || '',
-      data.bank_name || '', data.bank_branch || '', data.account_type || '', data.account_number || '', data.account_holder || '',
-      bankAccountsJson,
-      data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
-      data.default_tax_type || 'standard', data.default_tax_rate || 10,
-      data.default_closing_day || '', data.default_payment_day || '',
-      data.show_tax_on_estimate_delivery ? 1 : 0,
-      data.estimate_valid_days || 30,
-      data.default_delivery_place || '',
-      data.default_payment_terms || '',
-      data.default_delivery_date || '',
-      data.delivery_note_format || 'half'
-    ).run()
+    const { error } = await supabase
+      .from('company_info')
+      .insert({
+        user_id: DEMO_USER_ID,
+        company_name: data.company_name,
+        department_name: data.department_name || '',
+        person_name: data.person_name || '',
+        representative_title: data.representative_title || '',
+        representative_name: data.representative_name || '',
+        postal_code: data.postal_code || '',
+        address: data.address || '',
+        address_number: data.address_number || '',
+        building_name: data.building_name || '',
+        tel: data.tel || '',
+        fax: data.fax || '',
+        email: data.email || '',
+        website: data.website || '',
+        invoice_registration_no: data.invoice_registration_no || '',
+        logo_url: data.logo_url || '',
+        stamp_url: data.stamp_url || '',
+        bank_name: data.bank_name || '',
+        bank_branch: data.bank_branch || '',
+        account_type: data.account_type || '',
+        account_number: data.account_number || '',
+        account_holder: data.account_holder || '',
+        bank_accounts: bankAccountsJson,
+        default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
+        default_tax_type: data.default_tax_type || 'standard',
+        default_tax_rate: data.default_tax_rate || 10,
+        default_closing_day: data.default_closing_day || '',
+        default_payment_day: data.default_payment_day || '',
+        show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
+        estimate_valid_days: data.estimate_valid_days || 30,
+        default_delivery_place: data.default_delivery_place || '',
+        default_payment_terms: data.default_payment_terms || '',
+        default_delivery_date: data.default_delivery_date || '',
+        delivery_note_format: data.delivery_note_format || 'half'
+      })
+
+    if (error) throw error
   }
   
   return c.json({ success: true })
@@ -152,78 +163,112 @@ api.post('/company/upload-image', async (c) => {
 // 最近編集した分類を取得 ※ :id より前に定義
 api.get('/categories/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT id, category_code, category_name, tax_rate, tax_type, updated_at 
-    FROM categories 
-    WHERE is_active = 1 
-    ORDER BY updated_at DESC 
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('categories')
+    .select('id, category_code, category_name, tax_rate, tax_type, updated_at')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+  return c.json(data || [])
 })
 
 // 次の分類コードを取得 ※ :id より前に定義
 api.get('/categories/next-code', async (c) => {
-  const result = await c.env.DB.prepare(
-    "SELECT MAX(CAST(SUBSTR(category_code, 2) AS INTEGER)) as max_code FROM categories WHERE category_code LIKE 'C%'"
-  ).first()
-  const nextNum = (result?.max_code || 0) + 1
-  const nextCode = 'C' + String(nextNum).padStart(3, '0')
+  const { data, error } = await supabase
+    .from('categories')
+    .select('category_code')
+    .like('category_code', 'C%')
+    .eq('user_id', DEMO_USER_ID)
+
+  if (error) throw error
+
+  let maxCode = 0
+  for (const row of data || []) {
+    const code = row.category_code || ''
+    const num = parseInt(code.replace(/^C/, ''), 10)
+    if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+  }
+  const nextCode = 'C' + String(maxCode + 1).padStart(3, '0')
   return c.json({ next_code: nextCode })
 })
 
 api.get('/categories', async (c) => {
   const search = c.req.query('search')
   
-  let query = 'SELECT * FROM categories WHERE is_active = 1 AND user_id = ?'
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('categories')
+    .select('*')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+
   // 統合検索: 分類コード・分類名・メモを横断検索
   if (search) {
-    query += ' AND (category_code LIKE ? OR category_name LIKE ? OR notes LIKE ?)'
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `category_code.ilike.${searchPattern},category_name.ilike.${searchPattern},notes.ilike.${searchPattern}`
+    )
   }
-  
-  query += ' ORDER BY display_order, category_name'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query.order('display_order', { ascending: true }).order('category_name', { ascending: true })
+  if (error) throw error
+  return c.json(data || [])
 })
 
 api.get('/categories/:id', async (c) => {
   const id = c.req.param('id')
-  const result = await c.env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(id).first()
-  return c.json(result)
+  const { data, error } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle()
+
+  if (error) throw error
+  return c.json(data)
 })
 
 api.post('/categories', async (c) => {
   const data = await c.req.json()
-  const maxOrder = await c.env.DB.prepare('SELECT MAX(display_order) as max FROM categories WHERE user_id = ?').bind(DEMO_USER_ID).first()
-  
+  const { data: orderData, error: orderError } = await supabase
+    .from('categories')
+    .select('display_order, category_code')
+    .eq('user_id', DEMO_USER_ID)
+
+  if (orderError) throw orderError
+
+  let maxOrder = 0
+  let maxCode = 0
+  for (const row of orderData || []) {
+    if (typeof row.display_order === 'number') {
+      maxOrder = Math.max(maxOrder, row.display_order)
+    }
+    if (row.category_code) {
+      const num = parseInt(String(row.category_code).replace(/^C/, ''), 10)
+      if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+    }
+  }
+
   // 分類コードが空の場合は自動採番
   let categoryCode = data.category_code
   if (!categoryCode) {
-    const result = await c.env.DB.prepare(
-      "SELECT MAX(CAST(SUBSTR(category_code, 2) AS INTEGER)) as max_code FROM categories WHERE category_code LIKE 'C%' AND user_id = ?"
-    ).bind(DEMO_USER_ID).first()
-    const nextNum = (result?.max_code || 0) + 1
-    categoryCode = 'C' + String(nextNum).padStart(3, '0')
+    categoryCode = 'C' + String(maxCode + 1).padStart(3, '0')
   }
-  
-  await c.env.DB.prepare(`
-    INSERT INTO categories (user_id, category_code, category_name, tax_rate, tax_type, display_order, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    categoryCode,
-    data.category_name, 
-    data.tax_rate || 10, 
-    data.tax_type || 'standard',
-    (maxOrder?.max || 0) + 1,
-    data.notes || ''
-  ).run()
+
+  const { error } = await supabase
+    .from('categories')
+    .insert({
+      user_id: DEMO_USER_ID,
+      category_code: categoryCode,
+      category_name: data.category_name,
+      tax_rate: data.tax_rate || 10,
+      tax_type: data.tax_type || 'standard',
+      display_order: maxOrder + 1,
+      notes: data.notes || ''
+    })
+
+  if (error) throw error
   
   return c.json({ success: true, category_code: categoryCode })
 })
@@ -232,27 +277,31 @@ api.put('/categories/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
   
-  await c.env.DB.prepare(`
-    UPDATE categories SET
-      category_code = ?, category_name = ?, tax_rate = ?, tax_type = ?, display_order = ?, notes = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.category_code || '',
-    data.category_name, 
-    data.tax_rate, 
-    data.tax_type || 'standard',
-    data.display_order,
-    data.notes || '',
-    id
-  ).run()
+  const { error } = await supabase
+    .from('categories')
+    .update({
+      category_code: data.category_code || '',
+      category_name: data.category_name,
+      tax_rate: data.tax_rate,
+      tax_type: data.tax_type || 'standard',
+      display_order: data.display_order,
+      notes: data.notes || '',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
 api.delete('/categories/:id', async (c) => {
   const id = c.req.param('id')
-  await c.env.DB.prepare('UPDATE categories SET is_active = 0 WHERE id = ?').bind(id).run()
+  const { error } = await supabase
+    .from('categories')
+    .update({ is_active: 0, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw error
   return c.json({ success: true })
 })
 
@@ -263,36 +312,61 @@ api.delete('/categories/:id', async (c) => {
 // 最近編集した商品を取得 ※ :id より前に定義
 api.get('/products/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT p.id, p.product_code, p.product_name, p.category_id, c.category_name, p.updated_at 
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    WHERE p.is_active = 1 
-    ORDER BY p.updated_at DESC 
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('products')
+    .select('id, product_code, product_name, category_id, updated_at, categories(category_name)')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    category_name: row.categories?.category_name || null
+  }))
+  return c.json(rows)
 })
 
 // 次の商品コードを取得 ※ :id より前に定義
 api.get('/products/next-code', async (c) => {
-  const result = await c.env.DB.prepare(
-    "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%'"
-  ).first()
-  const nextNum = (result?.max_code || 0) + 1
-  const nextCode = 'P' + String(nextNum).padStart(4, '0')
+  const { data, error } = await supabase
+    .from('products')
+    .select('product_code')
+    .like('product_code', 'P%')
+    .eq('user_id', DEMO_USER_ID)
+
+  if (error) throw error
+
+  let maxCode = 0
+  for (const row of data || []) {
+    const code = row.product_code || ''
+    const num = parseInt(code.replace(/^P/, ''), 10)
+    if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+  }
+  const nextCode = 'P' + String(maxCode + 1).padStart(4, '0')
   return c.json({ next_code: nextCode })
 })
 
 // 分類内の商品名一覧を取得（サジェスト用）
 api.get('/products/by-category/:categoryId', async (c) => {
   const categoryId = c.req.param('categoryId')
-  const result = await c.env.DB.prepare(`
-    SELECT DISTINCT product_name FROM products 
-    WHERE category_id = ? AND is_active = 1
-    ORDER BY product_name
-  `).bind(categoryId).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('products')
+    .select('product_name')
+    .eq('category_id', categoryId)
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+    .order('product_name', { ascending: true })
+
+  if (error) throw error
+
+  const unique = new Set<string>()
+  for (const row of data || []) {
+    if (row.product_name) unique.add(row.product_name)
+  }
+  return c.json(Array.from(unique).map((name) => ({ product_name: name })))
 })
 
 api.get('/products', async (c) => {
@@ -300,56 +374,56 @@ api.get('/products', async (c) => {
   const search = c.req.query('search')
   const isWholesale = c.req.query('is_wholesale')
   
-  let query = `
-    SELECT p.*, c.category_name, c.category_code
-    FROM products p 
-    LEFT JOIN categories c ON p.category_id = c.id 
-    WHERE p.is_active = 1 AND p.user_id = ?
-  `
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('products')
+    .select('*, categories(category_name, category_code, display_order)')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+
   if (categoryId) {
-    query += ' AND p.category_id = ?'
-    params.push(categoryId)
+    query = query.eq('category_id', categoryId)
   }
-  
+
   // 統合検索: 商品コード、商品名、JANコード、分類名、備考、メモを横断検索
   if (search) {
-    query += ` AND (
-      p.product_code LIKE ? OR 
-      p.product_name LIKE ? OR 
-      p.jan_code LIKE ? OR 
-      c.category_name LIKE ? OR
-      p.remarks LIKE ? OR
-      p.notes LIKE ?
-    )`
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `product_code.ilike.${searchPattern},product_name.ilike.${searchPattern},jan_code.ilike.${searchPattern},remarks.ilike.${searchPattern},notes.ilike.${searchPattern},categories.category_name.ilike.${searchPattern}`
+    )
   }
-  
+
   // 上代商品フィルター
   if (isWholesale !== undefined && isWholesale !== '') {
-    query += ' AND p.is_wholesale = ?'
-    params.push(parseInt(isWholesale))
+    query = query.eq('is_wholesale', parseInt(isWholesale))
   }
-  
-  query += ' ORDER BY c.display_order, p.product_code, p.product_name'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query
+    .order('display_order', { foreignTable: 'categories', ascending: true, nullsFirst: true })
+    .order('product_code', { ascending: true })
+    .order('product_name', { ascending: true })
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    category_name: row.categories?.category_name || null,
+    category_code: row.categories?.category_code || null
+  }))
+  return c.json(rows)
 })
 
 api.get('/products/export.csv', async (c) => {
-  const productsResult = await c.env.DB.prepare(`
-    SELECT p.*, c.category_name, c.category_code
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    WHERE p.is_active = 1 AND p.user_id = ?
-    ORDER BY c.display_order, p.product_code, p.product_name
-  `).bind(DEMO_USER_ID).all()
-  
-  const products = productsResult.results as any[]
+  const { data: products, error: productsError } = await supabase
+    .from('products')
+    .select('*, categories(category_name, category_code, display_order)')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+    .order('display_order', { foreignTable: 'categories', ascending: true, nullsFirst: true })
+    .order('product_code', { ascending: true })
+    .order('product_name', { ascending: true })
+
+  if (productsError) throw productsError
+
   const headers: string[] = [
     'product_code',
     'product_name',
@@ -379,28 +453,28 @@ api.get('/products/export.csv', async (c) => {
   const rows: string[] = []
   rows.push(headers.join(','))
   
-  for (const product of products) {
-    const historyResult = await c.env.DB.prepare(`
-      SELECT effective_date, cost_price, wholesale_price, list_price
-      FROM product_price_histories
-      WHERE product_id = ?
-      ORDER BY effective_date DESC
-      LIMIT 5
-    `).bind(product.id).all()
-    
-    const history = historyResult.results as any[]
+  for (const product of products || []) {
+    const { data: history, error: historyError } = await supabase
+      .from('product_price_histories')
+      .select('effective_date, cost_price, wholesale_price, list_price')
+      .eq('product_id', product.id)
+      .order('effective_date', { ascending: false })
+      .limit(5)
+
+    if (historyError) throw historyError
+
     const row: string[] = [
       product.product_code || '',
       product.product_name || '',
       product.jan_code || '',
-      product.category_name || '',
+      product.categories?.category_name || '',
       product.unit_price ?? '',
       product.retail_price ?? '',
       product.cost_price ?? ''
     ]
     
     for (let i = 0; i < 5; i++) {
-      const item = history[i]
+      const item = (history || [])[i]
       row.push(item ? item.effective_date : '')
       row.push(item ? item.cost_price : '')
       row.push(item ? item.wholesale_price : '')
@@ -421,40 +495,65 @@ api.get('/products/export.csv', async (c) => {
 
 api.get('/products/:id', async (c) => {
   const id = c.req.param('id')
-  const result = await c.env.DB.prepare(`
-    SELECT p.*, c.category_name, c.category_code, c.tax_rate as category_tax_rate, c.tax_type as category_tax_type
-    FROM products p 
-    LEFT JOIN categories c ON p.category_id = c.id 
-    WHERE p.id = ?
-  `).bind(id).first()
-  return c.json(result)
+  const { data, error } = await supabase
+    .from('products')
+    .select('*, categories(category_name, category_code, tax_rate, tax_type)')
+    .eq('id', id)
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (!data) {
+    return c.json(null)
+  }
+
+  return c.json({
+    ...data,
+    category_name: data.categories?.category_name || null,
+    category_code: data.categories?.category_code || null,
+    category_tax_rate: data.categories?.tax_rate || null,
+    category_tax_type: data.categories?.tax_type || null
+  })
 })
 
 api.get('/products/:id/price-history', async (c) => {
   const id = c.req.param('id')
   const limitParam = c.req.query('limit')
   const limit = limitParam ? Math.max(1, parseInt(limitParam)) : 3
-  
-  const result = await c.env.DB.prepare(`
-    SELECT h.*
-    FROM product_price_histories h
-    INNER JOIN products p ON p.id = h.product_id
-    WHERE h.product_id = ? AND p.user_id = ?
-    ORDER BY h.effective_date DESC
-    LIMIT ?
-  `).bind(id, DEMO_USER_ID, limit).all()
-  
-  return c.json(result.results)
+
+  const { data: product, error: productError } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (productError) throw productError
+  if (!product) return c.json([])
+
+  const { data, error } = await supabase
+    .from('product_price_histories')
+    .select('*')
+    .eq('product_id', id)
+    .order('effective_date', { ascending: false })
+    .limit(limit)
+
+  if (error) throw error
+  return c.json(data || [])
 })
 
 api.post('/products/:id/price-history', async (c) => {
   const productId = c.req.param('id')
   const data = await c.req.json()
   
-  const product = await c.env.DB.prepare(
-    'SELECT id FROM products WHERE id = ? AND user_id = ?'
-  ).bind(productId, DEMO_USER_ID).first()
+  const { data: product, error: productError } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', productId)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
   
+  if (productError) throw productError
   if (!product) {
     return c.json({ error: '商品が見つかりません' }, 404)
   }
@@ -482,13 +581,23 @@ api.post('/products/:id/price-history', async (c) => {
   
   const historyId = crypto.randomUUID()
   try {
-    await c.env.DB.prepare(`
-      INSERT INTO product_price_histories (
-        id, product_id, effective_date, cost_price, wholesale_price, list_price
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(
-      historyId, productId, effectiveDate, costPrice, wholesalePrice, listPrice
-    ).run()
+    const { error } = await supabase
+      .from('product_price_histories')
+      .insert({
+        id: historyId,
+        product_id: productId,
+        effective_date: effectiveDate,
+        cost_price: costPrice,
+        wholesale_price: wholesalePrice,
+        list_price: listPrice
+      })
+
+    if (error) {
+      if (error.code === '23505') {
+        return c.json({ error: '同じ適用日の履歴が既にあります' }, 409)
+      }
+      throw error
+    }
   } catch (e) {
     const message = String(e)
     if (/unique/i.test(message)) {
@@ -505,10 +614,14 @@ api.put('/products/:id/price-history/:historyId', async (c) => {
   const historyId = c.req.param('historyId')
   const data = await c.req.json()
   
-  const product = await c.env.DB.prepare(
-    'SELECT id FROM products WHERE id = ? AND user_id = ?'
-  ).bind(productId, DEMO_USER_ID).first()
+  const { data: product, error: productError } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', productId)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
   
+  if (productError) throw productError
   if (!product) {
     return c.json({ error: '商品が見つかりません' }, 404)
   }
@@ -535,14 +648,24 @@ api.put('/products/:id/price-history/:historyId', async (c) => {
   }
   
   try {
-    await c.env.DB.prepare(`
-      UPDATE product_price_histories SET
-        effective_date = ?, cost_price = ?, wholesale_price = ?, list_price = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND product_id = ?
-    `).bind(
-      effectiveDate, costPrice, wholesalePrice, listPrice, historyId, productId
-    ).run()
+    const { error } = await supabase
+      .from('product_price_histories')
+      .update({
+        effective_date: effectiveDate,
+        cost_price: costPrice,
+        wholesale_price: wholesalePrice,
+        list_price: listPrice,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', historyId)
+      .eq('product_id', productId)
+
+    if (error) {
+      if (error.code === '23505') {
+        return c.json({ error: '同じ適用日の履歴が既にあります' }, 409)
+      }
+      throw error
+    }
   } catch (e) {
     const message = String(e)
     if (/unique/i.test(message)) {
@@ -558,18 +681,25 @@ api.delete('/products/:id/price-history/:historyId', async (c) => {
   const productId = c.req.param('id')
   const historyId = c.req.param('historyId')
   
-  const product = await c.env.DB.prepare(
-    'SELECT id FROM products WHERE id = ? AND user_id = ?'
-  ).bind(productId, DEMO_USER_ID).first()
+  const { data: product, error: productError } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', productId)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
   
+  if (productError) throw productError
   if (!product) {
     return c.json({ error: '商品が見つかりません' }, 404)
   }
   
-  await c.env.DB.prepare(`
-    DELETE FROM product_price_histories
-    WHERE id = ? AND product_id = ?
-  `).bind(historyId, productId).run()
+  const { error } = await supabase
+    .from('product_price_histories')
+    .delete()
+    .eq('id', historyId)
+    .eq('product_id', productId)
+  
+  if (error) throw error
   
   return c.json({ success: true })
 })
@@ -580,34 +710,51 @@ api.post('/products', async (c) => {
   // 商品コードが空の場合は自動採番
   let productCode = normalizeProductCode(data.product_code)
   if (!productCode) {
-    const result = await c.env.DB.prepare(
-      "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%' AND user_id = ?"
-    ).bind(DEMO_USER_ID).first()
-    const nextNum = (result?.max_code || 0) + 1
-    productCode = 'P' + String(nextNum).padStart(4, '0')
+    const { data: codeRows, error: codeError } = await supabase
+      .from('products')
+      .select('product_code')
+      .like('product_code', 'P%')
+      .eq('user_id', DEMO_USER_ID)
+
+    if (codeError) throw codeError
+
+    let maxCode = 0
+    for (const row of codeRows || []) {
+      const code = row.product_code || ''
+      const num = parseInt(code.replace(/^P/, ''), 10)
+      if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+    }
+    productCode = 'P' + String(maxCode + 1).padStart(4, '0')
   }
   
   const janCode = normalizeJan(data.jan_code)
   
   // 下代計算: 上代 × 掛け率 / 100
   const unitPrice = data.is_wholesale 
-    ? (data.retail_price * data.discount_rate / 100) 
+    ? Math.round(data.retail_price * data.discount_rate / 100) 
     : data.unit_price
   
-  await c.env.DB.prepare(`
-    INSERT INTO products (
-      user_id, product_name, product_code, jan_code, category_id,
-      unit_price, cost_price, retail_price, discount_rate,
-      tax_rate, min_lot, unit, is_wholesale, remarks, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    data.product_name, productCode, janCode,
-    data.category_id || null, unitPrice, data.cost_price || 0,
-    data.retail_price || 0, data.discount_rate || 100,
-    data.tax_rate || null, data.min_lot || 1, data.unit || '個',
-    data.is_wholesale || 0, data.remarks || '', data.notes || ''
-  ).run()
+  const { error } = await supabase
+    .from('products')
+    .insert({
+      user_id: DEMO_USER_ID,
+      product_name: data.product_name,
+      product_code: productCode,
+      jan_code: janCode,
+      category_id: data.category_id || null,
+      unit_price: unitPrice,
+      cost_price: data.cost_price || 0,
+      retail_price: data.retail_price || 0,
+      discount_rate: data.discount_rate || 100,
+      tax_rate: data.tax_rate || null,
+      min_lot: data.min_lot || 1,
+      unit: data.unit || '個',
+      is_wholesale: data.is_wholesale || 0,
+      remarks: data.remarks || '',
+      notes: data.notes || ''
+    })
+
+  if (error) throw error
   
   return c.json({ success: true, product_code: productCode })
 })
@@ -618,41 +765,63 @@ api.put('/products/:id', async (c) => {
   
   let productCode = normalizeProductCode(data.product_code)
   if (!productCode) {
-    const result = await c.env.DB.prepare(
-      "SELECT MAX(CAST(SUBSTR(product_code, 2) AS INTEGER)) as max_code FROM products WHERE product_code LIKE 'P%' AND user_id = ?"
-    ).bind(DEMO_USER_ID).first()
-    const nextNum = (result?.max_code || 0) + 1
-    productCode = 'P' + String(nextNum).padStart(4, '0')
+    const { data: codeRows, error: codeError } = await supabase
+      .from('products')
+      .select('product_code')
+      .like('product_code', 'P%')
+      .eq('user_id', DEMO_USER_ID)
+
+    if (codeError) throw codeError
+
+    let maxCode = 0
+    for (const row of codeRows || []) {
+      const code = row.product_code || ''
+      const num = parseInt(code.replace(/^P/, ''), 10)
+      if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+    }
+    productCode = 'P' + String(maxCode + 1).padStart(4, '0')
   }
   
   const janCode = normalizeJan(data.jan_code)
   
   // 下代計算: 上代 × 掛け率 / 100
   const unitPrice = data.is_wholesale 
-    ? (data.retail_price * data.discount_rate / 100) 
+    ? Math.round(data.retail_price * data.discount_rate / 100) 
     : data.unit_price
   
-  await c.env.DB.prepare(`
-    UPDATE products SET
-      product_name = ?, product_code = ?, jan_code = ?, category_id = ?,
-      unit_price = ?, cost_price = ?, retail_price = ?, discount_rate = ?,
-      tax_rate = ?, min_lot = ?, unit = ?, is_wholesale = ?, remarks = ?, notes = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.product_name, productCode, janCode,
-    data.category_id || null, unitPrice, data.cost_price || 0,
-    data.retail_price || 0, data.discount_rate || 100,
-    data.tax_rate || null, data.min_lot || 1, data.unit || '個',
-    data.is_wholesale || 0, data.remarks || '', data.notes || '', id
-  ).run()
+  const { error } = await supabase
+    .from('products')
+    .update({
+      product_name: data.product_name,
+      product_code: productCode,
+      jan_code: janCode,
+      category_id: data.category_id || null,
+      unit_price: unitPrice,
+      cost_price: data.cost_price || 0,
+      retail_price: data.retail_price || 0,
+      discount_rate: data.discount_rate || 100,
+      tax_rate: data.tax_rate || null,
+      min_lot: data.min_lot || 1,
+      unit: data.unit || '個',
+      is_wholesale: data.is_wholesale || 0,
+      remarks: data.remarks || '',
+      notes: data.notes || '',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
 api.delete('/products/:id', async (c) => {
   const id = c.req.param('id')
-  await c.env.DB.prepare('UPDATE products SET is_active = 0 WHERE id = ?').bind(id).run()
+  const { error } = await supabase
+    .from('products')
+    .update({ is_active: 0, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw error
   return c.json({ success: true })
 })
 
@@ -663,22 +832,36 @@ api.delete('/products/:id', async (c) => {
 // 最近編集した取引先を取得 ※ :id より前に定義する必要あり
 api.get('/clients/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT id, client_name, client_code, updated_at 
-    FROM clients 
-    WHERE is_active = 1 
-    ORDER BY updated_at DESC 
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('clients')
+    .select('id, client_name, client_code, updated_at')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+  return c.json(data || [])
 })
 
 // 次の取引先コードを取得 ※ :id より前に定義する必要あり
 api.get('/clients/next-code', async (c) => {
-  const result = await c.env.DB.prepare(
-    'SELECT MAX(CAST(client_code AS INTEGER)) as max_code FROM clients WHERE client_code GLOB "[0-9]*"'
-  ).first()
-  const nextCode = String((result?.max_code || 100) + 1)
+  const { data, error } = await supabase
+    .from('clients')
+    .select('client_code')
+    .eq('user_id', DEMO_USER_ID)
+
+  if (error) throw error
+
+  let maxCode = 100
+  for (const row of data || []) {
+    const code = String(row.client_code || '')
+    if (/^\d+$/.test(code)) {
+      const num = parseInt(code, 10)
+      if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+    }
+  }
+  const nextCode = String(maxCode + 1)
   return c.json({ next_code: nextCode })
 })
 
@@ -686,41 +869,44 @@ api.get('/clients', async (c) => {
   const search = c.req.query('search')
   const useWholesale = c.req.query('use_wholesale')
   
-  let query = 'SELECT * FROM clients WHERE is_active = 1 AND user_id = ?'
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('clients')
+    .select('*')
+    .eq('is_active', 1)
+    .eq('user_id', DEMO_USER_ID)
+
   // 統合検索: 取引先名・担当者名・代表者名・電話・携帯・メール・締め日を横断検索
   if (search) {
-    query += ` AND (
-      client_name LIKE ? OR 
-      person_name LIKE ? OR 
-      representative_name LIKE ? OR
-      tel LIKE ? OR 
-      mobile LIKE ? OR 
-      email LIKE ? OR 
-      closing_day LIKE ?
-    )`
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `client_name.ilike.${searchPattern},person_name.ilike.${searchPattern},representative_name.ilike.${searchPattern},tel.ilike.${searchPattern},mobile.ilike.${searchPattern},email.ilike.${searchPattern},closing_day.ilike.${searchPattern}`
+    )
   }
-  
+
   // 上代/下代フィルター（プルダウンで残す）
   if (useWholesale !== undefined && useWholesale !== '') {
-    query += ' AND use_wholesale_price = ?'
-    params.push(parseInt(useWholesale))
+    query = query.eq('use_wholesale_price', parseInt(useWholesale))
   }
-  
-  query += ' ORDER BY client_code, client_name'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query
+    .order('client_code', { ascending: true })
+    .order('client_name', { ascending: true })
+
+  if (error) throw error
+  return c.json(data || [])
 })
 
 api.get('/clients/:id', async (c) => {
   const id = c.req.param('id')
-  const result = await c.env.DB.prepare('SELECT * FROM clients WHERE id = ?').bind(id).first()
-  return c.json(result)
+  const { data, error } = await supabase
+    .from('clients')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (error) throw error
+  return c.json(data)
 })
 
 api.post('/clients', async (c) => {
@@ -729,35 +915,58 @@ api.post('/clients', async (c) => {
   // 取引先コードが空の場合は自動採番
   let clientCode = data.client_code
   if (!clientCode) {
-    const result = await c.env.DB.prepare(
-      'SELECT MAX(CAST(client_code AS INTEGER)) as max_code FROM clients WHERE client_code GLOB "[0-9]*" AND user_id = ?'
-    ).bind(DEMO_USER_ID).first()
-    clientCode = String((result?.max_code || 100) + 1)
+    const { data: codes, error } = await supabase
+      .from('clients')
+      .select('client_code')
+      .eq('user_id', DEMO_USER_ID)
+
+    if (error) throw error
+
+    let maxCode = 100
+    for (const row of codes || []) {
+      const code = String(row.client_code || '')
+      if (/^\d+$/.test(code)) {
+        const num = parseInt(code, 10)
+        if (!Number.isNaN(num)) maxCode = Math.max(maxCode, num)
+      }
+    }
+    clientCode = String(maxCode + 1)
   }
   
-  await c.env.DB.prepare(`
-    INSERT INTO clients (
-      user_id, client_name, department_name, postal_code, address,
-      address_number, building_name, client_code, person_name,
-      email, closing_day, payment_day, use_wholesale_price, discount_rate,
-      tel, fax, mobile, website,
-      bank_name, bank_branch, bank_account_type, bank_account_number, bank_account_holder,
-      representative_title, representative_name,
-      notes, tax_display_setting, is_individual
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    data.client_name, data.department_name || '', data.postal_code || '',
-    data.address || '', data.address_number || '', data.building_name || '',
-    clientCode, data.person_name || '', data.email || '',
-    data.closing_day || '', data.payment_day || '', data.use_wholesale_price || 0,
-    data.discount_rate || 100,
-    data.tel || '', data.fax || '', data.mobile || '', data.website || '',
-    data.bank_name || '', data.bank_branch || '', data.bank_account_type || '',
-    data.bank_account_number || '', data.bank_account_holder || '',
-    data.representative_title || '', data.representative_name || '',
-    data.notes || '', data.tax_display_setting || 'default', data.is_individual || 0
-  ).run()
+  const { error } = await supabase
+    .from('clients')
+    .insert({
+      user_id: DEMO_USER_ID,
+      client_name: data.client_name,
+      department_name: data.department_name || '',
+      postal_code: data.postal_code || '',
+      address: data.address || '',
+      address_number: data.address_number || '',
+      building_name: data.building_name || '',
+      client_code: clientCode,
+      person_name: data.person_name || '',
+      email: data.email || '',
+      closing_day: data.closing_day || '',
+      payment_day: data.payment_day || '',
+      use_wholesale_price: data.use_wholesale_price || 0,
+      discount_rate: data.discount_rate || 100,
+      tel: data.tel || '',
+      fax: data.fax || '',
+      mobile: data.mobile || '',
+      website: data.website || '',
+      bank_name: data.bank_name || '',
+      bank_branch: data.bank_branch || '',
+      bank_account_type: data.bank_account_type || '',
+      bank_account_number: data.bank_account_number || '',
+      bank_account_holder: data.bank_account_holder || '',
+      representative_title: data.representative_title || '',
+      representative_name: data.representative_name || '',
+      notes: data.notes || '',
+      tax_display_setting: data.tax_display_setting || 'default',
+      is_individual: data.is_individual || 0
+    })
+
+  if (error) throw error
   
   return c.json({ success: true, client_code: clientCode })
 })
@@ -766,36 +975,52 @@ api.put('/clients/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
   
-  await c.env.DB.prepare(`
-    UPDATE clients SET
-      client_name = ?, department_name = ?, postal_code = ?, address = ?,
-      address_number = ?, building_name = ?, client_code = ?, person_name = ?,
-      email = ?, closing_day = ?, payment_day = ?, use_wholesale_price = ?, discount_rate = ?,
-      tel = ?, fax = ?, mobile = ?, website = ?,
-      bank_name = ?, bank_branch = ?, bank_account_type = ?, bank_account_number = ?, bank_account_holder = ?,
-      representative_title = ?, representative_name = ?,
-      notes = ?, tax_display_setting = ?, is_individual = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.client_name, data.department_name || '', data.postal_code || '',
-    data.address || '', data.address_number || '', data.building_name || '',
-    data.client_code || '', data.person_name || '', data.email || '',
-    data.closing_day || '', data.payment_day || '', data.use_wholesale_price || 0,
-    data.discount_rate || 100,
-    data.tel || '', data.fax || '', data.mobile || '', data.website || '',
-    data.bank_name || '', data.bank_branch || '', data.bank_account_type || '',
-    data.bank_account_number || '', data.bank_account_holder || '',
-    data.representative_title || '', data.representative_name || '',
-    data.notes || '', data.tax_display_setting || 'default', data.is_individual || 0, id
-  ).run()
+  const { error } = await supabase
+    .from('clients')
+    .update({
+      client_name: data.client_name,
+      department_name: data.department_name || '',
+      postal_code: data.postal_code || '',
+      address: data.address || '',
+      address_number: data.address_number || '',
+      building_name: data.building_name || '',
+      client_code: data.client_code || '',
+      person_name: data.person_name || '',
+      email: data.email || '',
+      closing_day: data.closing_day || '',
+      payment_day: data.payment_day || '',
+      use_wholesale_price: data.use_wholesale_price || 0,
+      discount_rate: data.discount_rate || 100,
+      tel: data.tel || '',
+      fax: data.fax || '',
+      mobile: data.mobile || '',
+      website: data.website || '',
+      bank_name: data.bank_name || '',
+      bank_branch: data.bank_branch || '',
+      bank_account_type: data.bank_account_type || '',
+      bank_account_number: data.bank_account_number || '',
+      bank_account_holder: data.bank_account_holder || '',
+      representative_title: data.representative_title || '',
+      representative_name: data.representative_name || '',
+      notes: data.notes || '',
+      tax_display_setting: data.tax_display_setting || 'default',
+      is_individual: data.is_individual || 0,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
 api.delete('/clients/:id', async (c) => {
   const id = c.req.param('id')
-  await c.env.DB.prepare('UPDATE clients SET is_active = 0 WHERE id = ?').bind(id).run()
+  const { error } = await supabase
+    .from('clients')
+    .update({ is_active: 0, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw error
   return c.json({ success: true })
 })
 
@@ -806,14 +1031,20 @@ api.delete('/clients/:id', async (c) => {
 // 最近編集した納品
 api.get('/deliveries/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT d.*, cl.client_name 
-    FROM deliveries d 
-    LEFT JOIN clients cl ON d.client_id = cl.id 
-    ORDER BY d.updated_at DESC 
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('*, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 // 次の納品番号を取得
@@ -823,17 +1054,20 @@ api.get('/deliveries/next-no', async (c) => {
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const prefix = `D${year}${month}-`
   
-  const result = await c.env.DB.prepare(`
-    SELECT delivery_no 
-    FROM deliveries 
-    WHERE delivery_no LIKE ? 
-    ORDER BY delivery_no DESC 
-    LIMIT 1
-  `).bind(`${prefix}%`).first()
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('delivery_no')
+    .like('delivery_no', `${prefix}%`)
+    .eq('user_id', DEMO_USER_ID)
+    .order('delivery_no', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  
+  if (error) throw error
   
   let nextNum = 1
-  if (result?.delivery_no) {
-    const match = result.delivery_no.match(/-(\d+)$/)
+  if (data?.delivery_no) {
+    const match = data.delivery_no.match(/-(\d+)$/)
     if (match) {
       nextNum = parseInt(match[1]) + 1
     }
@@ -848,56 +1082,67 @@ api.get('/deliveries', async (c) => {
   const status = c.req.query('status')
   const month = c.req.query('month')
   
-  let query = `
-    SELECT d.*, cl.client_name 
-    FROM deliveries d 
-    LEFT JOIN clients cl ON d.client_id = cl.id 
-    WHERE d.user_id = ?
-  `
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('deliveries')
+    .select('*, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+
   if (clientId) {
-    query += ' AND d.client_id = ?'
-    params.push(clientId)
+    query = query.eq('client_id', clientId)
   }
-  
+
   if (search) {
-    query += ' AND (d.delivery_no LIKE ? OR cl.client_name LIKE ? OR d.notes LIKE ?)'
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `delivery_no.ilike.${searchPattern},notes.ilike.${searchPattern},clients.client_name.ilike.${searchPattern}`
+    )
   }
-  
+
   if (status) {
-    query += ' AND d.status = ?'
-    params.push(status)
+    query = query.eq('status', status)
   }
-  
+
   if (month) {
-    query += ' AND d.delivery_date LIKE ?'
-    params.push(`${month}%`)
+    query = query.like('delivery_date', `${month}%`)
   }
-  
-  query += ' ORDER BY d.delivery_date DESC, d.id DESC'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query
+    .order('delivery_date', { ascending: false })
+    .order('id', { ascending: false })
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 api.get('/deliveries/:id', async (c) => {
   const id = c.req.param('id')
-  const delivery = await c.env.DB.prepare(`
-    SELECT d.*, cl.client_name 
-    FROM deliveries d 
-    LEFT JOIN clients cl ON d.client_id = cl.id 
-    WHERE d.id = ?
-  `).bind(id).first()
-  
-  const items = await c.env.DB.prepare(`
-    SELECT * FROM delivery_items WHERE delivery_id = ? ORDER BY display_order
-  `).bind(id).all()
-  
-  return c.json({ ...delivery, items: items.results })
+  const { data: delivery, error: deliveryError } = await supabase
+    .from('deliveries')
+    .select('*, clients(client_name)')
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (deliveryError) throw deliveryError
+
+  const { data: items, error: itemsError } = await supabase
+    .from('delivery_items')
+    .select('*')
+    .eq('delivery_id', id)
+    .order('display_order', { ascending: true })
+
+  if (itemsError) throw itemsError
+
+  return c.json({
+    ...(delivery || {}),
+    client_name: delivery?.clients?.client_name || null,
+    items: items || []
+  })
 })
 
 // 納品書番号生成
@@ -905,21 +1150,30 @@ api.get('/deliveries/next-number', async (c) => {
   const clientId = c.req.query('client_id')
   const date = c.req.query('date') || new Date().toISOString().split('T')[0]
   
-  const client = await c.env.DB.prepare(
-    'SELECT client_code FROM clients WHERE id = ?'
-  ).bind(clientId).first()
+  const { data: client, error: clientError } = await supabase
+    .from('clients')
+    .select('client_code')
+    .eq('id', clientId)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (clientError) throw clientError
   
   const clientCode = client?.client_code || '000'
   const year = date.substring(2, 4)
   const monthDay = date.substring(5, 7) + date.substring(8, 10)
   
   // 同日同取引先の既存納品書をカウント
-  const existing = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count FROM deliveries 
-    WHERE delivery_date = ? AND client_id = ?
-  `).bind(date, clientId).first()
+  const { count: existingCount, error: existingError } = await supabase
+    .from('deliveries')
+    .select('id', { count: 'exact', head: true })
+    .eq('delivery_date', date)
+    .eq('client_id', clientId)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (existingError) throw existingError
   
-  const seq = (existing?.count || 0) + 1
+  const seq = (existingCount || 0) + 1
   const deliveryNo = seq > 1 
     ? `DS${year}-${clientCode}-${monthDay}-${String(seq).padStart(2, '0')}`
     : `DS${year}-${clientCode}-${monthDay}`
@@ -940,32 +1194,46 @@ api.post('/deliveries', async (c) => {
   }
   const totalAmount = subtotal + totalTax
   
-  const result = await c.env.DB.prepare(`
-    INSERT INTO deliveries (
-      user_id, delivery_no, delivery_date, client_id, subject, subtotal, tax_amount, total_amount, notes, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    data.delivery_no, data.delivery_date, data.client_id, data.subject || '',
-    subtotal, totalTax, totalAmount, data.notes || '', data.status || 'draft'
-  ).run()
-  
-  const deliveryId = result.meta.last_row_id
+  const { data: delivery, error: deliveryError } = await supabase
+    .from('deliveries')
+    .insert({
+      user_id: DEMO_USER_ID,
+      delivery_no: data.delivery_no,
+      delivery_date: data.delivery_date,
+      client_id: data.client_id,
+      subject: data.subject || '',
+      subtotal,
+      tax_amount: totalTax,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft'
+    })
+    .select('id')
+    .maybeSingle()
+
+  if (deliveryError) throw deliveryError
+  const deliveryId = delivery?.id
   
   // 明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO delivery_items (
-        delivery_id, product_id, product_name, jan_code, category_id,
-        quantity, unit_price, tax_rate, amount, notes, display_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      deliveryId, item.product_id || null, item.product_name,
-      item.jan_code || '', item.category_id || null,
-      item.quantity, item.unit_price, getTaxRate(item.tax_rate),
-      item.quantity * item.unit_price, item.notes || '', i + 1
-    ).run()
+    const { error: itemError } = await supabase
+      .from('delivery_items')
+      .insert({
+        delivery_id: deliveryId,
+        product_id: item.product_id || null,
+        product_name: item.product_name,
+        jan_code: item.jan_code || '',
+        category_id: item.category_id || null,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        notes: item.notes || '',
+        display_order: i + 1
+      })
+
+    if (itemError) throw itemError
   }
   
   return c.json({ success: true, id: deliveryId })
@@ -985,34 +1253,53 @@ api.put('/deliveries/:id', async (c) => {
   }
   const totalAmount = subtotal + totalTax
   
-  await c.env.DB.prepare(`
-    UPDATE deliveries SET
-      delivery_no = ?, delivery_date = ?, client_id = ?, subject = ?,
-      subtotal = ?, tax_amount = ?, total_amount = ?, notes = ?, status = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.delivery_no, data.delivery_date, data.client_id, data.subject || '',
-    subtotal, totalTax, totalAmount, data.notes || '', data.status || 'draft', id
-  ).run()
+  const { error: deliveryError } = await supabase
+    .from('deliveries')
+    .update({
+      delivery_no: data.delivery_no,
+      delivery_date: data.delivery_date,
+      client_id: data.client_id,
+      subject: data.subject || '',
+      subtotal,
+      tax_amount: totalTax,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (deliveryError) throw deliveryError
   
   // 既存明細を削除
-  await c.env.DB.prepare('DELETE FROM delivery_items WHERE delivery_id = ?').bind(id).run()
+  const { error: deleteError } = await supabase
+    .from('delivery_items')
+    .delete()
+    .eq('delivery_id', id)
+
+  if (deleteError) throw deleteError
   
   // 新しい明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO delivery_items (
-        delivery_id, product_id, product_name, jan_code, category_id,
-        quantity, unit_price, tax_rate, amount, notes, display_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      id, item.product_id || null, item.product_name,
-      item.jan_code || '', item.category_id || null,
-      item.quantity, item.unit_price, getTaxRate(item.tax_rate),
-      item.quantity * item.unit_price, item.notes || '', i + 1
-    ).run()
+    const { error: itemError } = await supabase
+      .from('delivery_items')
+      .insert({
+        delivery_id: id,
+        product_id: item.product_id || null,
+        product_name: item.product_name,
+        jan_code: item.jan_code || '',
+        category_id: item.category_id || null,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        notes: item.notes || '',
+        display_order: i + 1
+      })
+
+    if (itemError) throw itemError
   }
   
   return c.json({ success: true })
@@ -1023,17 +1310,32 @@ api.patch('/deliveries/:id/status', async (c) => {
   const id = c.req.param('id')
   const { status } = await c.req.json()
   
-  await c.env.DB.prepare(`
-    UPDATE deliveries SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).bind(status, id).run()
+  const { error } = await supabase
+    .from('deliveries')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
 api.delete('/deliveries/:id', async (c) => {
   const id = c.req.param('id')
-  await c.env.DB.prepare('DELETE FROM delivery_items WHERE delivery_id = ?').bind(id).run()
-  await c.env.DB.prepare('DELETE FROM deliveries WHERE id = ?').bind(id).run()
+  const { error: itemsError } = await supabase
+    .from('delivery_items')
+    .delete()
+    .eq('delivery_id', id)
+
+  if (itemsError) throw itemsError
+
+  const { error: deliveryError } = await supabase
+    .from('deliveries')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (deliveryError) throw deliveryError
   return c.json({ success: true })
 })
 
@@ -1044,15 +1346,20 @@ api.delete('/deliveries/:id', async (c) => {
 // 最近編集した見積を取得
 api.get('/estimates/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT e.id, e.estimate_no, e.estimate_date, e.total_amount, e.status, 
-           cl.client_name, e.updated_at
-    FROM estimates e
-    LEFT JOIN clients cl ON e.client_id = cl.id
-    ORDER BY e.updated_at DESC
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('estimates')
+    .select('id, estimate_no, estimate_date, total_amount, status, updated_at, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 // 次の見積番号を取得
@@ -1062,13 +1369,26 @@ api.get('/estimates/next-no', async (c) => {
   const yearMonth = now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0')
   const prefix = 'E' + yearMonth + '-'
   
-  const result = await c.env.DB.prepare(`
-    SELECT MAX(CAST(SUBSTR(estimate_no, 9) AS INTEGER)) as max_num 
-    FROM estimates 
-    WHERE estimate_no LIKE ?
-  `).bind(prefix + '%').first()
-  
-  const nextNum = (result?.max_num || 0) + 1
+  const { data, error } = await supabase
+    .from('estimates')
+    .select('estimate_no')
+    .like('estimate_no', `${prefix}%`)
+    .eq('user_id', DEMO_USER_ID)
+    .order('estimate_no', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+
+  let maxNum = 0
+  if (data?.estimate_no) {
+    const match = data.estimate_no.match(/-(\d+)$/)
+    if (match) {
+      maxNum = parseInt(match[1], 10)
+    }
+  }
+
+  const nextNum = maxNum + 1
   const nextNo = prefix + String(nextNum).padStart(3, '0')
   return c.json({ next_no: nextNo })
 })
@@ -1079,57 +1399,67 @@ api.get('/estimates', async (c) => {
   const status = c.req.query('status')
   const month = c.req.query('month')  // 年月フィルター (YYYY-MM形式)
   
-  let query = `
-    SELECT e.*, cl.client_name 
-    FROM estimates e 
-    LEFT JOIN clients cl ON e.client_id = cl.id 
-    WHERE e.user_id = ?
-  `
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('estimates')
+    .select('*, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+
   if (clientId) {
-    query += ' AND e.client_id = ?'
-    params.push(clientId)
+    query = query.eq('client_id', clientId)
   }
-  
+
   if (search) {
-    query += ' AND (e.estimate_no LIKE ? OR cl.client_name LIKE ? OR e.notes LIKE ?)'
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `estimate_no.ilike.${searchPattern},notes.ilike.${searchPattern},clients.client_name.ilike.${searchPattern}`
+    )
   }
-  
+
   if (status) {
-    query += ' AND e.status = ?'
-    params.push(status)
+    query = query.eq('status', status)
   }
-  
+
   if (month) {
-    // YYYY-MM形式で前方一致検索
-    query += ' AND e.estimate_date LIKE ?'
-    params.push(`${month}%`)
+    query = query.like('estimate_date', `${month}%`)
   }
-  
-  query += ' ORDER BY e.estimate_date DESC, e.id DESC'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query
+    .order('estimate_date', { ascending: false })
+    .order('id', { ascending: false })
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 api.get('/estimates/:id', async (c) => {
   const id = c.req.param('id')
-  const estimate = await c.env.DB.prepare(`
-    SELECT e.*, cl.client_name 
-    FROM estimates e 
-    LEFT JOIN clients cl ON e.client_id = cl.id 
-    WHERE e.id = ?
-  `).bind(id).first()
-  
-  const items = await c.env.DB.prepare(`
-    SELECT * FROM estimate_items WHERE estimate_id = ? ORDER BY display_order
-  `).bind(id).all()
-  
-  return c.json({ ...estimate, items: items.results })
+  const { data: estimate, error: estimateError } = await supabase
+    .from('estimates')
+    .select('*, clients(client_name)')
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (estimateError) throw estimateError
+
+  const { data: items, error: itemsError } = await supabase
+    .from('estimate_items')
+    .select('*')
+    .eq('estimate_id', id)
+    .order('display_order', { ascending: true })
+
+  if (itemsError) throw itemsError
+
+  return c.json({
+    ...(estimate || {}),
+    client_name: estimate?.clients?.client_name || null,
+    items: items || []
+  })
 })
 
 // 取引先の最新見積単価を取得
@@ -1137,16 +1467,21 @@ api.get('/estimates/latest-price', async (c) => {
   const clientId = c.req.query('client_id')
   const productName = c.req.query('product_name')
   
-  const result = await c.env.DB.prepare(`
-    SELECT ei.unit_price, ei.retail_price
-    FROM estimate_items ei
-    JOIN estimates e ON ei.estimate_id = e.id
-    WHERE e.client_id = ? AND ei.product_name = ?
-    ORDER BY e.estimate_date DESC, e.id DESC
-    LIMIT 1
-  `).bind(clientId, productName).first()
-  
-  return c.json(result || null)
+  const { data, error } = await supabase
+    .from('estimate_items')
+    .select('unit_price, retail_price, estimates(estimate_date, client_id, user_id)')
+    .eq('product_name', productName)
+    .eq('estimates.client_id', clientId)
+    .eq('estimates.user_id', DEMO_USER_ID)
+    .order('estimate_date', { foreignTable: 'estimates', ascending: false })
+    .order('estimate_id', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (!data) return c.json(null)
+  return c.json({ unit_price: data.unit_price, retail_price: data.retail_price })
 })
 
 api.post('/estimates', async (c) => {
@@ -1167,40 +1502,53 @@ api.post('/estimates', async (c) => {
   const taxAmount = Object.values(taxByRate).reduce((sum, tax) => sum + tax, 0)
   const totalAmount = subtotal + taxAmount
   
-  const result = await c.env.DB.prepare(`
-    INSERT INTO estimates (
-      user_id, estimate_no, estimate_date, client_id, valid_until, valid_until_text,
-      subject, subtotal, tax_amount, total_amount, notes, status,
-      delivery_place, payment_terms, delivery_date_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    data.estimate_no, data.estimate_date, data.client_id,
-    data.valid_until || null, data.valid_until_text || '',
-    data.subject || '',
-    subtotal, taxAmount, totalAmount,
-    data.notes || '', data.status || 'draft',
-    data.delivery_place || '', data.payment_terms || '', data.delivery_date_text || ''
-  ).run()
-  
-  const estimateId = result.meta.last_row_id
+  const { data: estimate, error: estimateError } = await supabase
+    .from('estimates')
+    .insert({
+      user_id: DEMO_USER_ID,
+      estimate_no: data.estimate_no,
+      estimate_date: data.estimate_date,
+      client_id: data.client_id,
+      valid_until: data.valid_until || null,
+      valid_until_text: data.valid_until_text || '',
+      subject: data.subject || '',
+      subtotal,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft',
+      delivery_place: data.delivery_place || '',
+      payment_terms: data.payment_terms || '',
+      delivery_date_text: data.delivery_date_text || ''
+    })
+    .select('id')
+    .maybeSingle()
+
+  if (estimateError) throw estimateError
+  const estimateId = estimate?.id
   
   // 明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO estimate_items (
-        estimate_id, product_id, product_name, jan_code,
-        quantity, unit_price, retail_price, use_retail_price,
-        tax_rate, amount, notes, display_order, item_notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      estimateId, item.product_id || null, item.product_name,
-      item.jan_code || '', item.quantity, item.unit_price,
-      item.retail_price || 0, item.use_retail_price || 0,
-      getTaxRate(item.tax_rate), item.quantity * item.unit_price,
-      item.notes || '', i + 1, item.item_notes || ''
-    ).run()
+    const { error: itemError } = await supabase
+      .from('estimate_items')
+      .insert({
+        estimate_id: estimateId,
+        product_id: item.product_id || null,
+        product_name: item.product_name,
+        jan_code: item.jan_code || '',
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        retail_price: item.retail_price || 0,
+        use_retail_price: item.use_retail_price || 0,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        notes: item.notes || '',
+        display_order: i + 1,
+        item_notes: item.item_notes || ''
+      })
+
+    if (itemError) throw itemError
   }
   
   return c.json({ success: true, id: estimateId })
@@ -1225,43 +1573,60 @@ api.put('/estimates/:id', async (c) => {
   const taxAmount = Object.values(taxByRate).reduce((sum, tax) => sum + tax, 0)
   const totalAmount = subtotal + taxAmount
   
-  await c.env.DB.prepare(`
-    UPDATE estimates SET
-      estimate_no = ?, estimate_date = ?, client_id = ?, valid_until = ?, valid_until_text = ?,
-      subject = ?, subtotal = ?, tax_amount = ?, total_amount = ?, 
-      notes = ?, status = ?,
-      delivery_place = ?, payment_terms = ?, delivery_date_text = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.estimate_no, data.estimate_date, data.client_id,
-    data.valid_until || null, data.valid_until_text || '',
-    data.subject || '',
-    subtotal, taxAmount, totalAmount,
-    data.notes || '', data.status || 'draft',
-    data.delivery_place || '', data.payment_terms || '', data.delivery_date_text || '',
-    id
-  ).run()
+  const { error: estimateError } = await supabase
+    .from('estimates')
+    .update({
+      estimate_no: data.estimate_no,
+      estimate_date: data.estimate_date,
+      client_id: data.client_id,
+      valid_until: data.valid_until || null,
+      valid_until_text: data.valid_until_text || '',
+      subject: data.subject || '',
+      subtotal,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft',
+      delivery_place: data.delivery_place || '',
+      payment_terms: data.payment_terms || '',
+      delivery_date_text: data.delivery_date_text || '',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (estimateError) throw estimateError
   
   // 既存明細を削除
-  await c.env.DB.prepare('DELETE FROM estimate_items WHERE estimate_id = ?').bind(id).run()
+  const { error: deleteError } = await supabase
+    .from('estimate_items')
+    .delete()
+    .eq('estimate_id', id)
+
+  if (deleteError) throw deleteError
   
   // 新しい明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO estimate_items (
-        estimate_id, product_id, product_name, jan_code,
-        quantity, unit_price, retail_price, use_retail_price,
-        tax_rate, amount, notes, display_order, item_notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      id, item.product_id || null, item.product_name,
-      item.jan_code || '', item.quantity, item.unit_price,
-      item.retail_price || 0, item.use_retail_price || 0,
-      getTaxRate(item.tax_rate), item.quantity * item.unit_price,
-      item.notes || '', i + 1, item.item_notes || ''
-    ).run()
+    const { error: itemError } = await supabase
+      .from('estimate_items')
+      .insert({
+        estimate_id: id,
+        product_id: item.product_id || null,
+        product_name: item.product_name,
+        jan_code: item.jan_code || '',
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        retail_price: item.retail_price || 0,
+        use_retail_price: item.use_retail_price || 0,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        notes: item.notes || '',
+        display_order: i + 1,
+        item_notes: item.item_notes || ''
+      })
+
+    if (itemError) throw itemError
   }
   
   return c.json({ success: true })
@@ -1272,17 +1637,32 @@ api.patch('/estimates/:id/status', async (c) => {
   const id = c.req.param('id')
   const { status } = await c.req.json()
   
-  await c.env.DB.prepare(`
-    UPDATE estimates SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).bind(status, id).run()
+  const { error } = await supabase
+    .from('estimates')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
 api.delete('/estimates/:id', async (c) => {
   const id = c.req.param('id')
-  await c.env.DB.prepare('DELETE FROM estimate_items WHERE estimate_id = ?').bind(id).run()
-  await c.env.DB.prepare('DELETE FROM estimates WHERE id = ?').bind(id).run()
+  const { error: itemsError } = await supabase
+    .from('estimate_items')
+    .delete()
+    .eq('estimate_id', id)
+
+  if (itemsError) throw itemsError
+
+  const { error: estimateError } = await supabase
+    .from('estimates')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (estimateError) throw estimateError
   return c.json({ success: true })
 })
 
@@ -1294,77 +1674,119 @@ api.get('/dashboard/summary', async (c) => {
   const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   
   // 今月の売上
-  const monthlyDeliveries = await c.env.DB.prepare(`
-    SELECT SUM(subtotal) as total FROM deliveries 
-    WHERE delivery_date LIKE ?
-  `).bind(`${thisMonth}%`).first()
+  const { data: monthlyDeliveryRows, error: monthlyDeliveryError } = await supabase
+    .from('deliveries')
+    .select('subtotal')
+    .eq('user_id', DEMO_USER_ID)
+    .like('delivery_date', `${thisMonth}%`)
+
+  if (monthlyDeliveryError) throw monthlyDeliveryError
+  const monthlySalesTotal = (monthlyDeliveryRows || []).reduce((sum, row) => sum + (row.subtotal || 0), 0)
   
   // 取引先別売上
-  const clientSales = await c.env.DB.prepare(`
-    SELECT cl.client_name, SUM(d.subtotal) as total
-    FROM deliveries d
-    JOIN clients cl ON d.client_id = cl.id
-    WHERE d.delivery_date LIKE ?
-    GROUP BY d.client_id
-    ORDER BY total DESC
-    LIMIT 10
-  `).bind(`${thisMonth}%`).all()
+  const { data: clientSalesRows, error: clientSalesError } = await supabase
+    .from('deliveries')
+    .select('client_id, subtotal, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+    .like('delivery_date', `${thisMonth}%`)
+
+  if (clientSalesError) throw clientSalesError
+
+  const clientSalesMap = new Map<string, { client_name: string, total: number }>()
+  for (const row of clientSalesRows || []) {
+    const clientId = String(row.client_id || '')
+    if (!clientId) continue
+    const existing = clientSalesMap.get(clientId)
+    const name = row.clients?.client_name || ''
+    const subtotal = row.subtotal || 0
+    if (existing) {
+      existing.total += subtotal
+    } else {
+      clientSalesMap.set(clientId, { client_name: name, total: subtotal })
+    }
+  }
+
+  const clientSales = Array.from(clientSalesMap.values())
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10)
   
   // 未請求納品書数
-  const uninvoiced = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count FROM deliveries WHERE invoice_id IS NULL
-  `).first()
+  const { count: uninvoicedCount, error: uninvoicedError } = await supabase
+    .from('deliveries')
+    .select('id', { count: 'exact', head: true })
+    .is('invoice_id', null)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (uninvoicedError) throw uninvoicedError
   
   // 今月の見積数
-  const monthlyEstimates = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count FROM estimates
-    WHERE estimate_date LIKE ?
-  `).bind(`${thisMonth}%`).first()
+  const { count: monthlyEstimatesCount, error: monthlyEstimatesError } = await supabase
+    .from('estimates')
+    .select('id', { count: 'exact', head: true })
+    .like('estimate_date', `${thisMonth}%`)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (monthlyEstimatesError) throw monthlyEstimatesError
   
   // 今月の納品数
-  const monthlyDeliveryCount = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count FROM deliveries
-    WHERE delivery_date LIKE ?
-  `).bind(`${thisMonth}%`).first()
+  const { count: monthlyDeliveryCount, error: monthlyDeliveryCountError } = await supabase
+    .from('deliveries')
+    .select('id', { count: 'exact', head: true })
+    .like('delivery_date', `${thisMonth}%`)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (monthlyDeliveryCountError) throw monthlyDeliveryCountError
   
   // 今月の請求数
-  const monthlyInvoices = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count FROM invoices
-    WHERE invoice_date LIKE ?
-  `).bind(`${thisMonth}%`).first()
+  const { count: monthlyInvoicesCount, error: monthlyInvoicesError } = await supabase
+    .from('invoices')
+    .select('id', { count: 'exact', head: true })
+    .like('invoice_date', `${thisMonth}%`)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (monthlyInvoicesError) throw monthlyInvoicesError
   
   // 未入金の請求書（sent または overdue ステータス）
-  const unpaidInvoices = await c.env.DB.prepare(`
-    SELECT COUNT(*) as count, SUM(total_amount) as total FROM invoices
-    WHERE status IN ('sent', 'pending', 'overdue')
-  `).first()
+  const { data: unpaidRows, error: unpaidError } = await supabase
+    .from('invoices')
+    .select('total_amount')
+    .in('status', ['sent', 'pending', 'overdue'])
+    .eq('user_id', DEMO_USER_ID)
+
+  if (unpaidError) throw unpaidError
+  const unpaidCount = (unpaidRows || []).length
+  const unpaidTotal = (unpaidRows || []).reduce((sum, row) => sum + (row.total_amount || 0), 0)
   
   // 直近6ヶ月の売上データ
   const monthlySalesData = []
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
     const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    const sales = await c.env.DB.prepare(`
-      SELECT SUM(subtotal) as total FROM deliveries
-      WHERE delivery_date LIKE ?
-    `).bind(`${ym}%`).first()
+    const { data: salesRows, error: salesError } = await supabase
+      .from('deliveries')
+      .select('subtotal')
+      .eq('user_id', DEMO_USER_ID)
+      .like('delivery_date', `${ym}%`)
+
+    if (salesError) throw salesError
+    const salesTotal = (salesRows || []).reduce((sum, row) => sum + (row.subtotal || 0), 0)
     monthlySalesData.push({
       month: ym,
       label: `${d.getMonth() + 1}月`,
-      total: sales?.total || 0
+      total: salesTotal || 0
     })
   }
   
   return c.json({
-    monthly_sales: monthlyDeliveries?.total || 0,
-    client_sales: clientSales.results,
-    uninvoiced_count: uninvoiced?.count || 0,
-    monthly_estimates: monthlyEstimates?.count || 0,
-    monthly_deliveries: monthlyDeliveryCount?.count || 0,
-    monthly_invoices: monthlyInvoices?.count || 0,
+    monthly_sales: monthlySalesTotal || 0,
+    client_sales: clientSales,
+    uninvoiced_count: uninvoicedCount || 0,
+    monthly_estimates: monthlyEstimatesCount || 0,
+    monthly_deliveries: monthlyDeliveryCount || 0,
+    monthly_invoices: monthlyInvoicesCount || 0,
     unpaid_invoices: {
-      count: unpaidInvoices?.count || 0,
-      total: unpaidInvoices?.total || 0
+      count: unpaidCount || 0,
+      total: unpaidTotal || 0
     },
     monthly_sales_chart: monthlySalesData
   })
@@ -1401,15 +1823,20 @@ function calculateBillingPeriod(closingDay: number | string, targetMonth: string
 // 最近編集した請求書
 api.get('/invoices/recent', async (c) => {
   const limit = c.req.query('limit') || '5'
-  const result = await c.env.DB.prepare(`
-    SELECT i.id, i.invoice_no, i.invoice_date, i.total_amount, i.status, 
-           cl.client_name, i.updated_at
-    FROM invoices i
-    LEFT JOIN clients cl ON i.client_id = cl.id
-    ORDER BY i.updated_at DESC
-    LIMIT ?
-  `).bind(parseInt(limit)).all()
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('id, invoice_no, invoice_date, total_amount, status, updated_at, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+    .order('updated_at', { ascending: false })
+    .limit(parseInt(limit))
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 // 次の請求番号を取得
@@ -1418,13 +1845,26 @@ api.get('/invoices/next-no', async (c) => {
   const yearMonth = now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0')
   const prefix = 'INV' + yearMonth + '-'
   
-  const result = await c.env.DB.prepare(`
-    SELECT MAX(CAST(SUBSTR(invoice_no, 11) AS INTEGER)) as max_num 
-    FROM invoices 
-    WHERE invoice_no LIKE ?
-  `).bind(prefix + '%').first()
-  
-  const nextNum = (result?.max_num || 0) + 1
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('invoice_no')
+    .like('invoice_no', `${prefix}%`)
+    .eq('user_id', DEMO_USER_ID)
+    .order('invoice_no', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+
+  let maxNum = 0
+  if (data?.invoice_no) {
+    const match = data.invoice_no.match(/-(\d+)$/)
+    if (match) {
+      maxNum = parseInt(match[1], 10)
+    }
+  }
+
+  const nextNum = maxNum + 1
   const nextNo = prefix + String(nextNum).padStart(3, '0')
   return c.json({ next_no: nextNo })
 })
@@ -1437,28 +1877,32 @@ api.get('/invoices/uninvoiced-deliveries', async (c) => {
   
   const { start, end } = calculateBillingPeriod(closingDay, targetMonth)
   
-  let query = `
-    SELECT d.*, cl.client_name 
-    FROM deliveries d 
-    LEFT JOIN clients cl ON d.client_id = cl.id 
-    WHERE d.invoice_id IS NULL 
-    AND d.status IN ('delivered', 'issued')
-    AND d.delivery_date >= ? AND d.delivery_date <= ?
-  `
-  const params: any[] = [start, end]
-  
+  let query = supabase
+    .from('deliveries')
+    .select('*, clients(client_name)')
+    .is('invoice_id', null)
+    .in('status', ['delivered', 'issued'])
+    .gte('delivery_date', start)
+    .lte('delivery_date', end)
+    .eq('user_id', DEMO_USER_ID)
+
   if (clientId) {
-    query += ' AND d.client_id = ?'
-    params.push(clientId)
+    query = query.eq('client_id', clientId)
   }
-  
-  query += ' ORDER BY d.delivery_date ASC, d.id ASC'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  
+
+  const { data, error } = await query
+    .order('delivery_date', { ascending: true })
+    .order('id', { ascending: true })
+
+  if (error) throw error
+
+  const deliveries = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+
   return c.json({
-    deliveries: result.results,
+    deliveries,
     billing_period: { start, end }
   })
 })
@@ -1468,27 +1912,52 @@ api.get('/invoices/uninvoiced-summary', async (c) => {
   const targetMonth = c.req.query('month') || new Date().toISOString().slice(0, 7)
   
   // 各得意先の締め日を考慮して未請求納品書をカウント
-  const result = await c.env.DB.prepare(`
-    SELECT 
-      cl.id as client_id,
-      cl.client_name,
-      cl.client_code,
-      cl.closing_day,
-      cl.payment_day,
-      COUNT(d.id) as delivery_count,
-      SUM(d.total_amount) as total_amount,
-      MIN(d.delivery_date) as first_delivery_date,
-      MAX(d.delivery_date) as last_delivery_date
-    FROM clients cl
-    INNER JOIN deliveries d ON d.client_id = cl.id
-    WHERE d.invoice_id IS NULL 
-    AND d.status IN ('delivered', 'issued')
-    AND d.delivery_date LIKE ?
-    GROUP BY cl.id
-    ORDER BY cl.client_name
-  `).bind(`${targetMonth}%`).all()
-  
-  return c.json(result.results)
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('id, total_amount, delivery_date, client_id, clients(client_name, client_code, closing_day, payment_day)')
+    .is('invoice_id', null)
+    .in('status', ['delivered', 'issued'])
+    .like('delivery_date', `${targetMonth}%`)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (error) throw error
+
+  const summary = new Map<string, any>()
+  for (const row of data || []) {
+    const clientId = String(row.client_id || '')
+    if (!clientId) continue
+    const client = row.clients || {}
+    const existing = summary.get(clientId)
+    const deliveryDate = row.delivery_date || ''
+    if (!existing) {
+      summary.set(clientId, {
+        client_id: row.client_id,
+        client_name: client.client_name || '',
+        client_code: client.client_code || '',
+        closing_day: client.closing_day || null,
+        payment_day: client.payment_day || null,
+        delivery_count: 1,
+        total_amount: row.total_amount || 0,
+        first_delivery_date: deliveryDate,
+        last_delivery_date: deliveryDate
+      })
+    } else {
+      existing.delivery_count += 1
+      existing.total_amount += row.total_amount || 0
+      if (deliveryDate && (!existing.first_delivery_date || deliveryDate < existing.first_delivery_date)) {
+        existing.first_delivery_date = deliveryDate
+      }
+      if (deliveryDate && (!existing.last_delivery_date || deliveryDate > existing.last_delivery_date)) {
+        existing.last_delivery_date = deliveryDate
+      }
+    }
+  }
+
+  const results = Array.from(summary.values()).sort((a, b) => {
+    return String(a.client_name).localeCompare(String(b.client_name))
+  })
+
+  return c.json(results)
 })
 
 // 未納品データのチェック（アラート用）
@@ -1496,20 +1965,26 @@ api.get('/invoices/undelivered-check', async (c) => {
   const targetMonth = c.req.query('month') || new Date().toISOString().slice(0, 7)
   
   // 納品日がターゲット月で、ステータスが「納品済」以外のデータをカウント
-  const result = await c.env.DB.prepare(`
-    SELECT 
-      COUNT(*) as count,
-      GROUP_CONCAT(DISTINCT cl.client_name) as client_names
-    FROM deliveries d
-    LEFT JOIN clients cl ON d.client_id = cl.id
-    WHERE d.delivery_date LIKE ?
-    AND d.status NOT IN ('delivered', 'issued', 'invoiced')
-  `).bind(`${targetMonth}%`).first()
-  
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('status, clients(client_name)')
+    .like('delivery_date', `${targetMonth}%`)
+    .not('status', 'in', '("delivered","issued","invoiced")')
+    .eq('user_id', DEMO_USER_ID)
+
+  if (error) throw error
+
+  const clientNames = new Set<string>()
+  for (const row of data || []) {
+    if (row.clients?.client_name) {
+      clientNames.add(row.clients.client_name)
+    }
+  }
+
   return c.json({
-    has_undelivered: (result?.count || 0) > 0,
-    count: result?.count || 0,
-    client_names: result?.client_names || ''
+    has_undelivered: (data || []).length > 0,
+    count: (data || []).length,
+    client_names: Array.from(clientNames).join(',')
   })
 })
 
@@ -1526,38 +2001,50 @@ api.post('/invoices/batch-create', async (c) => {
   
   for (const clientId of client_ids) {
     // 得意先情報を取得
-    const client = await c.env.DB.prepare(`
-      SELECT * FROM clients WHERE id = ?
-    `).bind(clientId).first()
-    
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('id', clientId)
+      .eq('user_id', DEMO_USER_ID)
+      .maybeSingle()
+
+    if (clientError) throw clientError
     if (!client) continue
-    
+
     const closingDay = client.closing_day || 31
     const { start, end } = calculateBillingPeriod(closingDay, target_month)
     
     // 未請求納品書を取得
-    const deliveries = await c.env.DB.prepare(`
-      SELECT * FROM deliveries 
-      WHERE client_id = ? AND invoice_id IS NULL 
-      AND status IN ('delivered', 'issued')
-      AND delivery_date >= ? AND delivery_date <= ?
-      ORDER BY delivery_date
-    `).bind(clientId, start, end).all()
-    
-    if (deliveries.results.length === 0) continue
+    const { data: deliveries, error: deliveriesError } = await supabase
+      .from('deliveries')
+      .select('*')
+      .eq('client_id', clientId)
+      .is('invoice_id', null)
+      .in('status', ['delivered', 'issued'])
+      .gte('delivery_date', start)
+      .lte('delivery_date', end)
+      .eq('user_id', DEMO_USER_ID)
+      .order('delivery_date', { ascending: true })
+
+    if (deliveriesError) throw deliveriesError
+    if (!deliveries || deliveries.length === 0) continue
     
     // 納品書の明細を集約
     let subtotal = 0
     let totalTax = 0
     const items: any[] = []
     
-    for (const delivery of deliveries.results as any[]) {
-      const deliveryItems = await c.env.DB.prepare(`
-        SELECT * FROM delivery_items WHERE delivery_id = ? ORDER BY display_order
-      `).bind(delivery.id).all()
-      
-      if (deliveryItems.results.length > 0) {
-        for (const item of deliveryItems.results as any[]) {
+    for (const delivery of deliveries as any[]) {
+      const { data: deliveryItems, error: deliveryItemsError } = await supabase
+        .from('delivery_items')
+        .select('*')
+        .eq('delivery_id', delivery.id)
+        .order('display_order', { ascending: true })
+
+      if (deliveryItemsError) throw deliveryItemsError
+
+      if (deliveryItems && deliveryItems.length > 0) {
+        for (const item of deliveryItems as any[]) {
           const amount = item.quantity * item.unit_price
           subtotal += amount
           totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
@@ -1591,11 +2078,25 @@ api.post('/invoices/batch-create', async (c) => {
     const now = new Date()
     const yearMonth = now.getFullYear().toString() + String(now.getMonth() + 1).padStart(2, '0')
     const prefix = 'INV' + yearMonth + '-'
-    const maxNo = await c.env.DB.prepare(`
-      SELECT MAX(CAST(SUBSTR(invoice_no, 11) AS INTEGER)) as max_num 
-      FROM invoices WHERE invoice_no LIKE ?
-    `).bind(prefix + '%').first()
-    const nextNum = ((maxNo?.max_num as number) || 0) + 1
+    const { data: latestInvoice, error: latestInvoiceError } = await supabase
+      .from('invoices')
+      .select('invoice_no')
+      .like('invoice_no', `${prefix}%`)
+      .eq('user_id', DEMO_USER_ID)
+      .order('invoice_no', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (latestInvoiceError) throw latestInvoiceError
+
+    let maxNum = 0
+    if (latestInvoice?.invoice_no) {
+      const match = latestInvoice.invoice_no.match(/-(\d+)$/)
+      if (match) {
+        maxNum = parseInt(match[1], 10)
+      }
+    }
+    const nextNum = maxNum + 1
     const invoiceNo = prefix + String(nextNum).padStart(3, '0')
     
     // 支払期限を計算
@@ -1607,41 +2108,58 @@ api.post('/invoices/batch-create', async (c) => {
     }
     
     // 請求書を作成
-    const invoiceResult = await c.env.DB.prepare(`
-      INSERT INTO invoices (
-        user_id, invoice_no, invoice_date, client_id,
-        billing_period_start, billing_period_end, payment_due_date,
-        subtotal, tax_amount, total_amount, notes, status, bank_info
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      DEMO_USER_ID,
-      invoiceNo, now.toISOString().split('T')[0], clientId,
-      start, end, paymentDueDate,
-      subtotal, totalTax, totalAmount, '', 'draft', bank_info || ''
-    ).run()
-    
-    const invoiceId = invoiceResult.meta.last_row_id
+    const { data: invoice, error: invoiceError } = await supabase
+      .from('invoices')
+      .insert({
+        user_id: DEMO_USER_ID,
+        invoice_no: invoiceNo,
+        invoice_date: now.toISOString().split('T')[0],
+        client_id: clientId,
+        billing_period_start: start,
+        billing_period_end: end,
+        payment_due_date: paymentDueDate,
+        subtotal,
+        tax_amount: totalTax,
+        total_amount: totalAmount,
+        notes: '',
+        status: 'draft',
+        bank_info: bank_info || ''
+      })
+      .select('id')
+      .maybeSingle()
+
+    if (invoiceError) throw invoiceError
+    const invoiceId = invoice?.id
     
     // 明細を追加
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      await c.env.DB.prepare(`
-        INSERT INTO invoice_items (
-          invoice_id, delivery_id, delivery_date, product_name,
-          quantity, unit_price, tax_rate, amount, display_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        invoiceId, item.delivery_id, item.delivery_date,
-        item.product_name, item.quantity, item.unit_price,
-        item.tax_rate, item.quantity * item.unit_price, i + 1
-      ).run()
+      const { error: itemError } = await supabase
+        .from('invoice_items')
+        .insert({
+          invoice_id: invoiceId,
+          delivery_id: item.delivery_id,
+          delivery_date: item.delivery_date,
+          product_name: item.product_name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          tax_rate: item.tax_rate,
+          amount: item.quantity * item.unit_price,
+          display_order: i + 1
+        })
+
+      if (itemError) throw itemError
     }
     
     // 納品書を請求済みに更新
-    for (const delivery of deliveries.results as any[]) {
-      await c.env.DB.prepare(`
-        UPDATE deliveries SET invoice_id = ?, status = 'invoiced', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-      `).bind(invoiceId, delivery.id).run()
+    for (const delivery of deliveries as any[]) {
+      const { error: updateError } = await supabase
+        .from('deliveries')
+        .update({ invoice_id: invoiceId, status: 'invoiced', updated_at: new Date().toISOString() })
+        .eq('id', delivery.id)
+        .eq('user_id', DEMO_USER_ID)
+
+      if (updateError) throw updateError
     }
     
     createdInvoices.push({
@@ -1649,7 +2167,7 @@ api.post('/invoices/batch-create', async (c) => {
       invoice_no: invoiceNo,
       client_name: client.client_name,
       total_amount: totalAmount,
-      delivery_count: deliveries.results.length
+      delivery_count: deliveries.length
     })
   }
   
@@ -1667,65 +2185,81 @@ api.get('/invoices', async (c) => {
   const status = c.req.query('status')
   const month = c.req.query('month')
   
-  let query = `
-    SELECT i.*, cl.client_name 
-    FROM invoices i 
-    LEFT JOIN clients cl ON i.client_id = cl.id 
-    WHERE i.user_id = ?
-  `
-  const params: any[] = [DEMO_USER_ID]
-  
+  let query = supabase
+    .from('invoices')
+    .select('*, clients(client_name)')
+    .eq('user_id', DEMO_USER_ID)
+
   if (clientId) {
-    query += ' AND i.client_id = ?'
-    params.push(clientId)
+    query = query.eq('client_id', clientId)
   }
-  
+
   if (search) {
-    query += ' AND (i.invoice_no LIKE ? OR cl.client_name LIKE ? OR i.notes LIKE ?)'
     const searchPattern = `%${search}%`
-    params.push(searchPattern, searchPattern, searchPattern)
+    query = query.or(
+      `invoice_no.ilike.${searchPattern},notes.ilike.${searchPattern},clients.client_name.ilike.${searchPattern}`
+    )
   }
-  
+
   if (status) {
-    query += ' AND i.status = ?'
-    params.push(status)
+    query = query.eq('status', status)
   }
-  
+
   if (month) {
-    query += ' AND i.invoice_date LIKE ?'
-    params.push(`${month}%`)
+    query = query.like('invoice_date', `${month}%`)
   }
-  
-  query += ' ORDER BY i.invoice_date DESC, i.id DESC'
-  
-  const stmt = c.env.DB.prepare(query)
-  const result = await stmt.bind(...params).all()
-  return c.json(result.results)
+
+  const { data, error } = await query
+    .order('invoice_date', { ascending: false })
+    .order('id', { ascending: false })
+
+  if (error) throw error
+
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    client_name: row.clients?.client_name || null
+  }))
+  return c.json(rows)
 })
 
 // 請求書詳細取得
 api.get('/invoices/:id', async (c) => {
   const id = c.req.param('id')
-  const invoice = await c.env.DB.prepare(`
-    SELECT i.*, cl.client_name, cl.closing_day, cl.payment_day
-    FROM invoices i 
-    LEFT JOIN clients cl ON i.client_id = cl.id 
-    WHERE i.id = ?
-  `).bind(id).first()
-  
-  const items = await c.env.DB.prepare(`
-    SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY display_order
-  `).bind(id).all()
-  
+  const { data: invoice, error: invoiceError } = await supabase
+    .from('invoices')
+    .select('*, clients(client_name, closing_day, payment_day)')
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (invoiceError) throw invoiceError
+
+  const { data: items, error: itemsError } = await supabase
+    .from('invoice_items')
+    .select('*')
+    .eq('invoice_id', id)
+    .order('display_order', { ascending: true })
+
+  if (itemsError) throw itemsError
+
   // 紐づく納品書も取得
-  const deliveries = await c.env.DB.prepare(`
-    SELECT id, delivery_no, delivery_date, total_amount 
-    FROM deliveries 
-    WHERE invoice_id = ?
-    ORDER BY delivery_date
-  `).bind(id).all()
-  
-  return c.json({ ...invoice, items: items.results, deliveries: deliveries.results })
+  const { data: deliveries, error: deliveriesError } = await supabase
+    .from('deliveries')
+    .select('id, delivery_no, delivery_date, total_amount')
+    .eq('invoice_id', id)
+    .eq('user_id', DEMO_USER_ID)
+    .order('delivery_date', { ascending: true })
+
+  if (deliveriesError) throw deliveriesError
+
+  return c.json({
+    ...(invoice || {}),
+    client_name: invoice?.clients?.client_name || null,
+    closing_day: invoice?.clients?.closing_day || null,
+    payment_day: invoice?.clients?.payment_day || null,
+    items: items || [],
+    deliveries: deliveries || []
+  })
 })
 
 // 請求書作成
@@ -1742,44 +2276,60 @@ api.post('/invoices', async (c) => {
   }
   const totalAmount = subtotal + totalTax
   
-  const result = await c.env.DB.prepare(`
-    INSERT INTO invoices (
-      user_id, invoice_no, invoice_date, client_id, 
-      billing_period_start, billing_period_end, closing_date, payment_due_date,
-      subtotal, tax_amount, total_amount, notes, status, bank_info
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    DEMO_USER_ID,
-    data.invoice_no, data.invoice_date, data.client_id,
-    data.billing_period_start || null, data.billing_period_end || null,
-    data.closing_date || null, data.payment_due_date || null,
-    subtotal, totalTax, totalAmount, data.notes || '', data.status || 'draft',
-    data.bank_info || ''
-  ).run()
-  
-  const invoiceId = result.meta.last_row_id
+  const { data: invoice, error: invoiceError } = await supabase
+    .from('invoices')
+    .insert({
+      user_id: DEMO_USER_ID,
+      invoice_no: data.invoice_no,
+      invoice_date: data.invoice_date,
+      client_id: data.client_id,
+      billing_period_start: data.billing_period_start || null,
+      billing_period_end: data.billing_period_end || null,
+      closing_date: data.closing_date || null,
+      payment_due_date: data.payment_due_date || null,
+      subtotal,
+      tax_amount: totalTax,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft',
+      bank_info: data.bank_info || ''
+    })
+    .select('id')
+    .maybeSingle()
+
+  if (invoiceError) throw invoiceError
+  const invoiceId = invoice?.id
   
   // 明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO invoice_items (
-        invoice_id, delivery_id, delivery_date, product_name,
-        quantity, unit_price, tax_rate, amount, display_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      invoiceId, item.delivery_id || null, item.delivery_date || null,
-      item.product_name, item.quantity, item.unit_price,
-      getTaxRate(item.tax_rate), item.quantity * item.unit_price, i + 1
-    ).run()
+    const { error: itemError } = await supabase
+      .from('invoice_items')
+      .insert({
+        invoice_id: invoiceId,
+        delivery_id: item.delivery_id || null,
+        delivery_date: item.delivery_date || null,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        display_order: i + 1
+      })
+
+    if (itemError) throw itemError
   }
   
   // 対象納品書のinvoice_idを更新
   if (data.delivery_ids && data.delivery_ids.length > 0) {
     for (const deliveryId of data.delivery_ids) {
-      await c.env.DB.prepare(`
-        UPDATE deliveries SET invoice_id = ?, status = 'invoiced', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-      `).bind(invoiceId, deliveryId).run()
+      const { error: updateError } = await supabase
+        .from('deliveries')
+        .update({ invoice_id: invoiceId, status: 'invoiced', updated_at: new Date().toISOString() })
+        .eq('id', deliveryId)
+        .eq('user_id', DEMO_USER_ID)
+
+      if (updateError) throw updateError
     }
   }
   
@@ -1801,39 +2351,55 @@ api.put('/invoices/:id', async (c) => {
   }
   const totalAmount = subtotal + totalTax
   
-  await c.env.DB.prepare(`
-    UPDATE invoices SET
-      invoice_no = ?, invoice_date = ?, client_id = ?,
-      billing_period_start = ?, billing_period_end = ?, 
-      closing_date = ?, payment_due_date = ?,
-      subtotal = ?, tax_amount = ?, total_amount = ?, 
-      notes = ?, status = ?, bank_info = ?,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).bind(
-    data.invoice_no, data.invoice_date, data.client_id,
-    data.billing_period_start || null, data.billing_period_end || null,
-    data.closing_date || null, data.payment_due_date || null,
-    subtotal, totalTax, totalAmount, data.notes || '', data.status || 'draft',
-    data.bank_info || '', id
-  ).run()
+  const { error: invoiceError } = await supabase
+    .from('invoices')
+    .update({
+      invoice_no: data.invoice_no,
+      invoice_date: data.invoice_date,
+      client_id: data.client_id,
+      billing_period_start: data.billing_period_start || null,
+      billing_period_end: data.billing_period_end || null,
+      closing_date: data.closing_date || null,
+      payment_due_date: data.payment_due_date || null,
+      subtotal,
+      tax_amount: totalTax,
+      total_amount: totalAmount,
+      notes: data.notes || '',
+      status: data.status || 'draft',
+      bank_info: data.bank_info || '',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (invoiceError) throw invoiceError
   
   // 既存の明細を削除
-  await c.env.DB.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').bind(id).run()
+  const { error: deleteError } = await supabase
+    .from('invoice_items')
+    .delete()
+    .eq('invoice_id', id)
+
+  if (deleteError) throw deleteError
   
   // 新しい明細を追加
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    await c.env.DB.prepare(`
-      INSERT INTO invoice_items (
-        invoice_id, delivery_id, delivery_date, product_name,
-        quantity, unit_price, tax_rate, amount, display_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      id, item.delivery_id || null, item.delivery_date || null,
-      item.product_name, item.quantity, item.unit_price,
-      getTaxRate(item.tax_rate), item.quantity * item.unit_price, i + 1
-    ).run()
+    const { error: itemError } = await supabase
+      .from('invoice_items')
+      .insert({
+        invoice_id: id,
+        delivery_id: item.delivery_id || null,
+        delivery_date: item.delivery_date || null,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        tax_rate: getTaxRate(item.tax_rate),
+        amount: item.quantity * item.unit_price,
+        display_order: i + 1
+      })
+
+    if (itemError) throw itemError
   }
   
   return c.json({ success: true })
@@ -1844,10 +2410,13 @@ api.patch('/invoices/:id/status', async (c) => {
   const id = c.req.param('id')
   const { status } = await c.req.json()
   
-  await c.env.DB.prepare(`
-    UPDATE invoices SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).bind(status, id).run()
+  const { error } = await supabase
+    .from('invoices')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
   
+  if (error) throw error
   return c.json({ success: true })
 })
 
@@ -1856,12 +2425,28 @@ api.delete('/invoices/:id', async (c) => {
   const id = c.req.param('id')
   
   // 紐づく納品書のinvoice_idをクリア
-  await c.env.DB.prepare(`
-    UPDATE deliveries SET invoice_id = NULL, status = 'delivered' WHERE invoice_id = ?
-  `).bind(id).run()
-  
-  await c.env.DB.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').bind(id).run()
-  await c.env.DB.prepare('DELETE FROM invoices WHERE id = ?').bind(id).run()
+  const { error: clearError } = await supabase
+    .from('deliveries')
+    .update({ invoice_id: null, status: 'delivered', updated_at: new Date().toISOString() })
+    .eq('invoice_id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (clearError) throw clearError
+
+  const { error: itemsError } = await supabase
+    .from('invoice_items')
+    .delete()
+    .eq('invoice_id', id)
+
+  if (itemsError) throw itemsError
+
+  const { error: invoiceError } = await supabase
+    .from('invoices')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', DEMO_USER_ID)
+
+  if (invoiceError) throw invoiceError
   return c.json({ success: true })
 })
 

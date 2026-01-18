@@ -2,9 +2,8 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { Layout } from './components/Layout'
 import api from './routes/api'
-import type { Bindings } from './types'
 
-const app = new Hono<{ Bindings: Bindings }>()
+const app = new Hono()
 
 // CORS設定
 app.use('/api/*', cors())
@@ -2699,21 +2698,27 @@ app.get('/products', async (c) => {
             
             // 上代商品価格
             '<div id="wholesalePriceSection" class="' + ((data && data.is_wholesale) ? '' : 'hidden') + '">' +
+            '<div class="mb-3 text-sm text-gray-600">下代の決め方：</div>' +
+            '<div class="flex gap-4 mb-4">' +
+            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="wholesale_mode" id="wholesaleModeRate" value="rate" checked class="w-4 h-4 text-blue-600" /><span class="ml-2">掛け率で計算（推奨）</span></label>' +
+            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="wholesale_mode" id="wholesaleModeManual" value="manual" class="w-4 h-4 text-blue-600" /><span class="ml-2">下代を手入力（掛け率を逆算）</span></label>' +
+            '</div>' +
             '<div class="grid grid-cols-1 md:grid-cols-4 gap-4">' +
             '<div><label class="block text-sm font-bold text-yellow-700 mb-1">上代（希望小売価格）</label>' +
             '<input type="number" name="retail_price" id="retailPriceInput" value="' + (data ? (data.retail_price || 0) : 0) + '" class="w-full border-2 border-yellow-400 rounded-lg px-3 py-2 focus:ring-2 focus:ring-yellow-500" /></div>' +
             '<div><label class="block text-sm font-bold text-yellow-700 mb-1">原価</label>' +
             '<input type="number" name="cost_price_wholesale" id="costPriceWholesale" value="' + (data ? (data.cost_price || 0) : 0) + '" class="w-full border-2 border-yellow-400 rounded-lg px-3 py-2 focus:ring-2 focus:ring-yellow-500" /></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（自動計算）</label>' +
-            '<div class="flex items-center"><input type="text" id="costRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
+            '<div class="flex items-center"><input type="text" id="costRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" placeholder="-" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">掛け率</label>' +
-            '<div class="flex items-center"><input type="number" name="discount_rate" id="discountRateInput" value="' + (data ? (data.discount_rate || 100) : 100) + '" step="0.1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
+            '<div class="flex items-center"><input type="number" name="discount_rate" id="discountRateInput" value="' + (data ? (data.discount_rate || 100) : 100) + '" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
             '</div>' +
-            '<div class="mt-4 p-3 bg-white rounded-lg border border-yellow-300">' +
-            '<div class="flex justify-between items-center">' +
-            '<span class="text-sm text-gray-600">下代（卸価格）= 上代 × 掛け率</span>' +
-            '<span id="wholesalePriceDisplay" class="text-lg font-bold text-yellow-800">¥0</span>' +
-            '</div></div></div>' +
+            '<div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">下代（卸価格）</label>' +
+            '<input type="number" id="wholesalePriceInput" min="0" step="1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '</div>' +
+            '<div class="text-sm text-gray-500 flex items-center">下代 = 上代 × 掛け率</div>' +
+            '</div>' +
             '</div>' +
             
             // 単価変更履歴
@@ -2724,7 +2729,12 @@ app.get('/products', async (c) => {
             '<div id="priceHistoryEmpty" class="text-sm text-gray-400">履歴がありません</div>' +
             '</div>' +
             '<div class="mt-5 border-t pt-4">' +
-            '<div class="grid grid-cols-1 md:grid-cols-4 gap-4">' +
+            '<div class="mb-3 text-sm text-gray-600">下代の決め方：</div>' +
+            '<div class="flex gap-4 mb-4">' +
+            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="price_history_mode" id="priceHistoryModeRate" value="rate" checked class="w-4 h-4 text-blue-600" /><span class="ml-2">掛け率で計算（推奨）</span></label>' +
+            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="price_history_mode" id="priceHistoryModeManual" value="manual" class="w-4 h-4 text-blue-600" /><span class="ml-2">下代を手入力（掛け率を逆算）</span></label>' +
+            '</div>' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
             '<div>' +
             '<label class="block text-sm font-medium text-gray-700 mb-1">適用日 *</label>' +
             '<input type="date" id="priceHistoryEffectiveDate" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
@@ -2736,14 +2746,24 @@ app.get('/products', async (c) => {
             '<p id="priceHistoryCostPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
             '</div>' +
             '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">下代 *</label>' +
-            '<input type="number" id="priceHistoryWholesalePrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            '<p id="priceHistoryWholesalePriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
-            '</div>' +
-            '<div>' +
             '<label class="block text-sm font-medium text-gray-700 mb-1">上代 *</label>' +
             '<input type="number" id="priceHistoryListPrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
             '<p id="priceHistoryListPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '</div>' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">下代 *</label>' +
+            '<input type="number" id="priceHistoryWholesalePrice" min="0" step="1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryWholesalePriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">掛け率</label>' +
+            '<div class="flex items-center"><input type="number" id="priceHistoryRateInput" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /><span class="ml-2 font-bold text-gray-600">%</span></div>' +
+            '</div>' +
+            '<div>' +
+            '<label class="block text-sm font-medium text-gray-700 mb-1">原価率（自動計算）</label>' +
+            '<div class="flex items-center"><input type="text" id="priceHistoryCostRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" placeholder="-" /><span class="ml-2 font-bold text-gray-600">%</span></div>' +
             '</div>' +
             '</div>' +
             '<div class="mt-4 flex items-center gap-2">' +
@@ -2785,7 +2805,9 @@ app.get('/products', async (c) => {
           var costPriceWholesale = document.getElementById('costPriceWholesale');
           var discountRateInput = document.getElementById('discountRateInput');
           var costRateDisplay = document.getElementById('costRateDisplay');
-          var wholesalePriceDisplay = document.getElementById('wholesalePriceDisplay');
+          var wholesalePriceInput = document.getElementById('wholesalePriceInput');
+          var wholesaleModeRate = document.getElementById('wholesaleModeRate');
+          var wholesaleModeManual = document.getElementById('wholesaleModeManual');
           var unitPriceInput = document.getElementById('unitPriceInput');
           var costPriceNormal = document.getElementById('costPriceNormal');
           var costRateNormalDisplay = document.getElementById('costRateNormalDisplay');
@@ -2793,6 +2815,15 @@ app.get('/products', async (c) => {
           var janCodeInput = document.getElementById('janCodeInput');
           var productCodeError = document.getElementById('productCodeError');
           var janCodeError = document.getElementById('janCodeError');
+          
+          var priceHistoryModeRate = document.getElementById('priceHistoryModeRate');
+          var priceHistoryModeManual = document.getElementById('priceHistoryModeManual');
+          var priceHistoryEffectiveDate = document.getElementById('priceHistoryEffectiveDate');
+          var priceHistoryCostPrice = document.getElementById('priceHistoryCostPrice');
+          var priceHistoryWholesalePrice = document.getElementById('priceHistoryWholesalePrice');
+          var priceHistoryListPrice = document.getElementById('priceHistoryListPrice');
+          var priceHistoryRateInput = document.getElementById('priceHistoryRateInput');
+          var priceHistoryCostRateDisplay = document.getElementById('priceHistoryCostRateDisplay');
           
           function showFieldError(element, message) {
             if (!element) return;
@@ -2815,6 +2846,17 @@ app.get('/products', async (c) => {
               icon: 'fa-times-circle',
               type: 'danger'
             });
+          }
+
+          function setInputReadonly(input, readonly) {
+            if (!input) return;
+            input.readOnly = readonly;
+            input.classList.toggle('bg-gray-100', readonly);
+          }
+          
+          function setRateValue(input, value) {
+            if (!input) return;
+            input.value = (value === null || value === undefined) ? '' : value.toFixed(2);
           }
           
           if (productCodeInput) {
@@ -2981,7 +3023,7 @@ app.get('/products', async (c) => {
               normalSection.classList.toggle('hidden', isWholesale);
               wholesaleSection.classList.toggle('hidden', !isWholesale);
               if (isWholesale) {
-                calculateWholesaleValues();
+              updateWholesaleCalculations();
               } else {
                 calculateNormalCostRate();
               }
@@ -3004,28 +3046,154 @@ app.get('/products', async (c) => {
           costPriceNormal.addEventListener('input', calculateNormalCostRate);
           calculateNormalCostRate(); // 初期計算
           
-          // 上代・原価変更で原価率と下代を計算
-          function calculateWholesaleValues() {
-            var retail = parseFloat(retailPriceInput.value) || 0;
-            var cost = parseFloat(costPriceWholesale.value) || 0;
-            var rate = parseFloat(discountRateInput.value) || 100;
-            
-            // 下代（卸価格）= 上代 × 掛け率
-            var wholesale = Math.round(retail * rate / 100);
-            wholesalePriceDisplay.textContent = '¥' + wholesale.toLocaleString();
-            
-            // 原価率 = 原価 ÷ 下代（卸価格） × 100
-            if (wholesale > 0) {
-              costRateDisplay.value = Math.round(cost / wholesale * 100);
-            } else {
-              costRateDisplay.value = '-';
-            }
+        var isUpdatingWholesale = false;
+        function applyWholesaleMode() {
+          if (wholesaleModeRate && wholesaleModeRate.checked) {
+            setInputReadonly(wholesalePriceInput, true);
+            setInputReadonly(discountRateInput, false);
+          } else {
+            setInputReadonly(wholesalePriceInput, false);
+            setInputReadonly(discountRateInput, true);
+          }
+        }
+        
+        function updateWholesaleCalculations() {
+          if (isUpdatingWholesale) return;
+          isUpdatingWholesale = true;
+          
+          var retail = window.SmartBill.parseNumber(retailPriceInput && retailPriceInput.value);
+          var cost = window.SmartBill.parseNumber(costPriceWholesale && costPriceWholesale.value);
+          var rate = window.SmartBill.parseNumber(discountRateInput && discountRateInput.value);
+          var wholesale = window.SmartBill.parseNumber(wholesalePriceInput && wholesalePriceInput.value);
+          
+          if (wholesaleModeRate && wholesaleModeRate.checked) {
+            var nextWholesale = window.SmartBill.calcWholesaleFromRate(retail, rate);
+            wholesalePriceInput.value = nextWholesale === null ? '' : nextWholesale;
+            wholesale = window.SmartBill.parseNumber(wholesalePriceInput.value);
+          } else {
+            var nextRate = window.SmartBill.calcRateFromWholesale(retail, wholesale);
+            setRateValue(discountRateInput, nextRate);
           }
           
-          retailPriceInput.addEventListener('input', calculateWholesaleValues);
-          costPriceWholesale.addEventListener('input', calculateWholesaleValues);
-          discountRateInput.addEventListener('input', calculateWholesaleValues);
-          calculateWholesaleValues();
+          var costRate = window.SmartBill.calcCostRate(cost, wholesale);
+          costRateDisplay.value = costRate === null ? '-' : costRate.toFixed(2);
+          
+          isUpdatingWholesale = false;
+        }
+        
+        if (wholesaleModeRate) {
+          wholesaleModeRate.addEventListener('change', function() {
+            applyWholesaleMode();
+            updateWholesaleCalculations();
+          });
+        }
+        if (wholesaleModeManual) {
+          wholesaleModeManual.addEventListener('change', function() {
+            applyWholesaleMode();
+            updateWholesaleCalculations();
+          });
+        }
+        
+        if (retailPriceInput) {
+          retailPriceInput.addEventListener('input', updateWholesaleCalculations);
+        }
+        if (costPriceWholesale) {
+          costPriceWholesale.addEventListener('input', updateWholesaleCalculations);
+        }
+        if (discountRateInput) {
+          discountRateInput.addEventListener('input', function() {
+            if (wholesaleModeRate && wholesaleModeRate.checked) {
+              updateWholesaleCalculations();
+            }
+          });
+        }
+        if (wholesalePriceInput) {
+          wholesalePriceInput.addEventListener('input', function() {
+            if (wholesaleModeManual && wholesaleModeManual.checked) {
+              updateWholesaleCalculations();
+            }
+          });
+        }
+        
+        applyWholesaleMode();
+        updateWholesaleCalculations();
+        
+        var isUpdatingPriceHistory = false;
+        function applyPriceHistoryMode() {
+          if (!priceHistoryWholesalePrice || !priceHistoryRateInput) return;
+          if (priceHistoryModeRate && priceHistoryModeRate.checked) {
+            setInputReadonly(priceHistoryWholesalePrice, true);
+            setInputReadonly(priceHistoryRateInput, false);
+          } else {
+            setInputReadonly(priceHistoryWholesalePrice, false);
+            setInputReadonly(priceHistoryRateInput, true);
+          }
+        }
+        
+        function updatePriceHistoryCalculations() {
+          if (isUpdatingPriceHistory) return;
+          isUpdatingPriceHistory = true;
+          
+          var retail = window.SmartBill.parseNumber(priceHistoryListPrice && priceHistoryListPrice.value);
+          var cost = window.SmartBill.parseNumber(priceHistoryCostPrice && priceHistoryCostPrice.value);
+          var rate = window.SmartBill.parseNumber(priceHistoryRateInput && priceHistoryRateInput.value);
+          var wholesale = window.SmartBill.parseNumber(priceHistoryWholesalePrice && priceHistoryWholesalePrice.value);
+          
+          if (priceHistoryModeRate && priceHistoryModeRate.checked) {
+            var nextWholesale = window.SmartBill.calcWholesaleFromRate(retail, rate);
+            if (priceHistoryWholesalePrice) {
+              priceHistoryWholesalePrice.value = nextWholesale === null ? '' : nextWholesale;
+            }
+            wholesale = window.SmartBill.parseNumber(priceHistoryWholesalePrice && priceHistoryWholesalePrice.value);
+          } else {
+            var nextRate = window.SmartBill.calcRateFromWholesale(retail, wholesale);
+            setRateValue(priceHistoryRateInput, nextRate);
+          }
+          
+          if (priceHistoryCostRateDisplay) {
+            var costRate = window.SmartBill.calcCostRate(cost, wholesale);
+            priceHistoryCostRateDisplay.value = costRate === null ? '-' : costRate.toFixed(2);
+          }
+          
+          isUpdatingPriceHistory = false;
+        }
+        
+        if (priceHistoryModeRate) {
+          priceHistoryModeRate.addEventListener('change', function() {
+            applyPriceHistoryMode();
+            updatePriceHistoryCalculations();
+          });
+        }
+        if (priceHistoryModeManual) {
+          priceHistoryModeManual.addEventListener('change', function() {
+            applyPriceHistoryMode();
+            updatePriceHistoryCalculations();
+          });
+        }
+        
+        if (priceHistoryListPrice) {
+          priceHistoryListPrice.addEventListener('input', updatePriceHistoryCalculations);
+        }
+        if (priceHistoryCostPrice) {
+          priceHistoryCostPrice.addEventListener('input', updatePriceHistoryCalculations);
+        }
+        if (priceHistoryRateInput) {
+          priceHistoryRateInput.addEventListener('input', function() {
+            if (priceHistoryModeRate && priceHistoryModeRate.checked) {
+              updatePriceHistoryCalculations();
+            }
+          });
+        }
+        if (priceHistoryWholesalePrice) {
+          priceHistoryWholesalePrice.addEventListener('input', function() {
+            if (priceHistoryModeManual && priceHistoryModeManual.checked) {
+              updatePriceHistoryCalculations();
+            }
+          });
+        }
+        
+        applyPriceHistoryMode();
+        updatePriceHistoryCalculations();
           
           // 次の商品コード取得
           var getNextCodeBtn = document.getElementById('getNextCode');

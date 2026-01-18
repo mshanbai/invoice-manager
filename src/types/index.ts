@@ -152,8 +152,3 @@ export interface InvoiceItem {
   amount: number;
   display_order: number;
 }
-
-// Cloudflare Bindings
-export interface Bindings {
-  DB: D1Database;
-}

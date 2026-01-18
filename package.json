@@ -2,29 +2,18 @@
   "name": "smartbill",
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.config.cloudflare.ts",
-    "dev:cloudflare": "vite --config vite.config.cloudflare.ts",
+    "dev": "vite --config vite.config.ts",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy:vercel": "vercel",
-    "dev:sandbox": "wrangler pages dev dist --d1=smartbill-db --local --ip 0.0.0.0 --port 3000",
-    "deploy:cloudflare": "npm run build && wrangler pages deploy dist",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "db:migrate:local": "wrangler d1 migrations apply smartbill-db --local",
-    "db:migrate:prod": "wrangler d1 migrations apply smartbill-db",
-    "db:seed": "wrangler d1 execute smartbill-db --local --file=./seed.sql",
-    "db:reset:win": "if exist .wrangler\\state\\v3\\d1 rmdir /s /q .wrangler\\state\\v3\\d1 && npm run db:migrate:local",
-    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local",
-    "db:console:local": "wrangler d1 execute smartbill-db --local"
+    "deploy:vercel": "vercel"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.90.1",
     "hono": "^4.10.7"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
-    "@cloudflare/workers-types": "^4.20241127.0",
-    "vite": "^6.3.5",
-    "wrangler": "^4.4.0"
+    "vite": "^6.3.5"
   }
 }

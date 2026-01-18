@@ -16,6 +16,32 @@ window.SmartBill.normalizeProductCode = function(value) {
   return String(value).trim();
 };
 
+window.SmartBill.parseNumber = function(value) {
+  if (value === null || value === undefined || value === '') return null;
+  var n = Number(value);
+  if (Number.isNaN(n)) return null;
+  return n;
+};
+
+window.SmartBill.round2 = function(value) {
+  return Math.round(value * 100) / 100;
+};
+
+window.SmartBill.calcWholesaleFromRate = function(retail, rate) {
+  if (retail === null || rate === null) return null;
+  return Math.round(retail * rate / 100);
+};
+
+window.SmartBill.calcRateFromWholesale = function(retail, wholesale) {
+  if (retail === null || wholesale === null || retail <= 0) return null;
+  return window.SmartBill.round2(wholesale / retail * 100);
+};
+
+window.SmartBill.calcCostRate = function(cost, wholesale) {
+  if (cost === null || wholesale === null || wholesale <= 0) return null;
+  return window.SmartBill.round2(cost / wholesale * 100);
+};
+
 // DOM読み込み後に実行
 document.addEventListener('DOMContentLoaded', function() {
   // サイドバートグル
