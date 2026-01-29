@@ -397,6 +397,9 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   function generateEstimateHTML(data) {
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
+    var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
+    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
     
     var logoHtml = '';
     if (companyInfo.logo_url && companyInfo.logo_url.startsWith('data:image')) {
@@ -438,8 +441,9 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     if (data.subject) html += '<div style="font-size:11pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:2mm;">件名: ' + escapeHtml(data.subject) + '</div>';
     // 件名の下1行空けて「下記の通り」
     html += '<div class="billing-intro" style="margin-top:4mm;">下記の通り、お見積り申し上げます。</div>';
-    // 小計をそのまま表示（税抜き金額）
-    html += '<div class="billing-box"><span class="billing-label estimate">御見積金額</span><span class="billing-value">&yen;' + formatNumber(data.subtotal) + '</span></div>';
+    // 表示設定に合わせた金額
+    var billingAmount = showTax ? taxBreakdown.total : taxBreakdown.subtotal;
+    html += '<div class="billing-box"><span class="billing-label estimate">御見積金額</span><span class="billing-value">&yen;' + formatNumber(billingAmount) + '</span></div>';
     
     // 受渡場所・取引条件・納期（データがあれば表示）
     var hasTerms = data.delivery_place || data.payment_terms || data.delivery_date_text;
@@ -478,8 +482,18 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     // 明細テーブル（税列なし、上代・下代対応、備考列あり）
     html += generateSimpleItemsTableHTML(data.items || [], 10, data.show_retail);
     
-    // 合計行（小計のみ表示）
-    html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table"><tr><td class="label total-label" style="background:#16a34a;">合計</td><td class="value total-value">&yen;' + formatNumber(data.subtotal) + '</td></tr></table></div>';
+    // 合計行（税表示設定に合わせて表示）
+    if (showTax) {
+      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+        '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#16a34a;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
+        '</table></div>';
+    } else {
+      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+        '<tr><td class="label total-label" style="background:#16a34a;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '</table></div>';
+    }
     
     // 備考
     html += '<div class="notes-box"><div class="notes-title">備考</div><div class="notes-content">' + (data.notes ? escapeHtml(data.notes) : '&nbsp;<br>&nbsp;<br>&nbsp;') + '</div></div>';
@@ -494,6 +508,9 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   function generateDeliveryHalfSection(data, pageItems, isCopy, pageNum, totalPages, isLastPage) {
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
+    var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
+    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
     var honorific = clientInfo.is_individual ? '様' : '御中';
@@ -567,9 +584,15 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     // 合計（最終ページのみ表示、税なし）
     if (isLastPage) {
       html += '<div style="display:flex;justify-content:flex-end;margin-top:1mm;">';
-      html += '<table class="summary-table" style="font-size:8pt;"><tr>';
-      html += '<td class="label total-label" style="background:#9333ea;">合計</td><td class="value total-value">&yen;' + formatNumber(data.subtotal) + '</td>';
-      html += '</tr></table></div>';
+      html += '<table class="summary-table" style="font-size:8pt;">';
+      if (showTax) {
+        html += '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
+        html += '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>';
+        html += '<tr><td class="label total-label" style="background:#9333ea;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>';
+      } else {
+        html += '<tr><td class="label total-label" style="background:#9333ea;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
+      }
+      html += '</table></div>';
     }
     
     // 備考欄（最終ページのみ、6行制限）
@@ -593,6 +616,9 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
     var format = data.delivery_note_format || 'half';
+    var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
+    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
     
     var logoHtml = '';
     if (companyInfo.logo_url && companyInfo.logo_url.startsWith('data:image')) {
@@ -694,8 +720,18 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     // 明細テーブル（税列なし、備考列あり）
     html += generateSimpleItemsTableHTML(data.items || [], 10, false);
     
-    // 合計行（小計のみ表示、消費税なし）
-    html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table"><tr><td class="label total-label" style="background:#9333ea;">合計</td><td class="value total-value">&yen;' + formatNumber(data.subtotal) + '</td></tr></table></div>';
+    // 合計行（税表示設定に合わせて表示）
+    if (showTax) {
+      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+        '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#9333ea;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
+        '</table></div>';
+    } else {
+      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+        '<tr><td class="label total-label" style="background:#9333ea;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '</table></div>';
+    }
     
     // 備考
     if (data.notes) html += '<div class="notes-box"><div class="notes-title">備考</div><div class="notes-content">' + escapeHtml(data.notes) + '</div></div>';

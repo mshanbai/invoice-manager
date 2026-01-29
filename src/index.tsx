@@ -5,6 +5,41 @@ import api from './routes/api'
 
 const app = new Hono()
 
+const docHeaderTitleHelpers = `
+  function normalizeHeaderText(value) {
+    if (value === null || value === undefined) return '';
+    var text = String(value).trim();
+    if (!text || text === 'undefined' || text === 'null') return '';
+    return text;
+  }
+  function getClientDisplayLabel(client) {
+    if (!client) return '';
+    var name = normalizeHeaderText(client.client_name || client.name || '');
+    if (!name) return '';
+    var code = normalizeHeaderText(client.client_code);
+    return code ? name + ' (' + code + ')' : name;
+  }
+  function buildDocHeaderTitle(params) {
+    var docTypeLabel = normalizeHeaderText(params && params.docTypeLabel);
+    var mode = normalizeHeaderText(params && params.mode);
+    var clientLabel = normalizeHeaderText(params && params.clientLabel);
+    var docNo = normalizeHeaderText(params && params.docNo);
+    var baseTitle = '';
+    if (mode === 'edit') {
+      baseTitle = (docTypeLabel ? docTypeLabel : '') + '編集';
+    } else if (mode === 'new') {
+      baseTitle = '新規' + (docTypeLabel ? docTypeLabel : '') + '作成';
+    } else {
+      baseTitle = docTypeLabel || '';
+    }
+    var parts = [];
+    if (clientLabel) parts.push(clientLabel);
+    if (docNo) parts.push(docNo);
+    if (parts.length > 0 && baseTitle) return baseTitle + ': ' + parts.join(' ');
+    return baseTitle || parts.join(' ');
+  }
+`;
+
 // CORS設定
 app.use('/api/*', cors())
 
@@ -136,43 +171,69 @@ app.get('/', async (c) => {
       <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
       <script dangerouslySetInnerHTML={{__html: `
         async function loadDashboard() {
+          const defaultSummary = {
+            monthly_sales: 0,
+            client_sales: [],
+            uninvoiced_count: 0,
+            monthly_estimates: 0,
+            monthly_deliveries: 0,
+            monthly_invoices: 0,
+            unpaid_invoices: { count: 0, total: 0 },
+            monthly_sales_chart: []
+          };
+          let summaryData = defaultSummary;
+          let clientsData = [];
           try {
             const [summary, clients] = await Promise.all([
               axios.get('/api/dashboard/summary'),
               axios.get('/api/clients')
             ]);
-            
+            summaryData = summary.data || defaultSummary;
+            clientsData = clients.data || [];
+          } catch (e) {
+            console.error(e);
+            summaryData = defaultSummary;
+            try {
+              const clients = await axios.get('/api/clients');
+              clientsData = clients.data || [];
+            } catch (e2) {
+              console.error(e2);
+              clientsData = [];
+            }
+          }
+          
+          try {
             // 今月の売上
             document.getElementById('monthlySales').textContent = 
-              '¥' + (summary.data.monthly_sales || 0).toLocaleString();
+              '¥' + (summaryData.monthly_sales || 0).toLocaleString();
             
             // 未入金請求書
             document.getElementById('unpaidInvoices').textContent = 
-              summary.data.unpaid_invoices.count + '件';
-            if (summary.data.unpaid_invoices.total > 0) {
+              summaryData.unpaid_invoices.count + '件';
+            if (summaryData.unpaid_invoices.total > 0) {
               document.getElementById('unpaidAmount').textContent = 
-                '¥' + summary.data.unpaid_invoices.total.toLocaleString();
+                '¥' + summaryData.unpaid_invoices.total.toLocaleString();
             }
             
             // 未請求納品書
             document.getElementById('uninvoicedCount').textContent = 
-              summary.data.uninvoiced_count + '件';
+              summaryData.uninvoiced_count + '件';
             
             // 取引先数
             document.getElementById('clientCount').textContent = 
-              clients.data.length + '社';
+              clientsData.length + '社';
             
             // 今月の書類数
             document.getElementById('monthlyEstimates').textContent = 
-              summary.data.monthly_estimates + '件';
+              summaryData.monthly_estimates + '件';
             document.getElementById('monthlyDeliveries').textContent = 
-              summary.data.monthly_deliveries + '件';
+              summaryData.monthly_deliveries + '件';
             document.getElementById('monthlyInvoicesCount').textContent = 
-              summary.data.monthly_invoices + '件';
+              summaryData.monthly_invoices + '件';
             
             // 取引先別売上
-            const salesHtml = summary.data.client_sales.length > 0
-              ? summary.data.client_sales.map(s => 
+            const salesHtml = summaryData.client_sales.length > 0
+              ? summaryData.client_sales.map(s => 
                   '<div class="flex justify-between py-2 border-b">' +
                   '<span>' + s.client_name + '</span>' +
                   '<span class="font-bold">¥' + (s.total || 0).toLocaleString() + '</span>' +
@@ -182,7 +243,7 @@ app.get('/', async (c) => {
             document.getElementById('clientSales').innerHTML = salesHtml;
             
             // 6ヶ月売上グラフ
-            const chartData = summary.data.monthly_sales_chart || [];
+            const chartData = summaryData.monthly_sales_chart || [];
             const ctx = document.getElementById('salesChart').getContext('2d');
             new Chart(ctx, {
               type: 'bar',
@@ -289,7 +350,7 @@ app.get('/company', async (c) => {
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">郵便番号</label>
-                <input type="text" name="postal_code" placeholder="123-4567" maxlength="8"
+                <input type="text" name="postal_code" placeholder="123-4567" maxLength={8}
                   class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
               </div>
               <div class="md:col-span-2">
@@ -914,7 +975,7 @@ app.get('/categories', async (c) => {
                 </tr>
               </thead>
               <tbody id="categoryTableBody" class="divide-y">
-                <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
+                <tr><td colSpan={6} class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1522,7 +1583,7 @@ app.get('/clients', async (c) => {
                 </tr>
               </thead>
               <tbody id="clientTableBody" class="divide-y">
-                <tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
+                <tr><td colSpan={8} class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -2268,7 +2329,7 @@ app.get('/products', async (c) => {
                 </tr>
               </thead>
               <tbody id="productTableBody" class="divide-y">
-                <tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
+                <tr><td colSpan={7} class="px-4 py-8 text-center text-gray-500">読込中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -2675,9 +2736,36 @@ app.get('/products', async (c) => {
             '</div></div>' +
             '</div></div>' +
             
+            // 単価（適用中）
+            '<div class="bg-green-50 rounded-lg border-2 border-green-300 p-5 shadow-sm">' +
+            '<div class="flex items-start justify-between gap-2">' +
+            '<h3 class="text-xl font-extrabold text-gray-800"><i class="fas fa-check-circle mr-2 text-green-600"></i>現在単価</h3>' +
+            '<div id="activePriceNextChange" class="text-lg font-extrabold text-blue-700">次回単価変更日：なし</div>' +
+            '</div>' +
+            '<div class="mt-4">' +
+            '<div id="activePriceNormalSection" class="' + ((data && data.is_wholesale) ? 'hidden' : '') + '">' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">単価</label><div id="activeUnitPrice" class="bg-white/70 px-1 py-1 text-lg font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価</label><div id="activeCostPriceNormal" class="bg-white/70 px-1 py-1 text-lg font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（原価/単価）</label><div id="activeCostRateNormal" class="bg-white/70 px-1 py-1 text-base font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '</div></div>' +
+            '<div id="activePriceWholesaleSection" class="' + ((data && data.is_wholesale) ? '' : 'hidden') + '">' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">上代</label><div id="activeListPrice" class="bg-white/70 px-1 py-1 text-lg font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">下代</label><div id="activeWholesalePrice" class="bg-white/70 px-1 py-1 text-lg font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価</label><div id="activeCostPriceWholesale" class="bg-white/70 px-1 py-1 text-lg font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '</div>' +
+            '<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">掛け率</label><div id="activeDiscountRate" class="bg-white/70 px-1 py-1 text-base font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（原価/下代）</label><div id="activeCostRateWholesale" class="bg-white/70 px-1 py-1 text-base font-extrabold text-gray-800 cursor-default select-none">-</div></div>' +
+            '</div></div>' +
+            '</div>' +
+            '</div>' +
+            
             // 上代設定
             '<div class="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-300 rounded-lg p-5">' +
-            '<h3 class="text-lg font-bold mb-4 text-yellow-800"><i class="fas fa-yen-sign mr-2"></i>価格設定</h3>' +
+            '<h3 class="text-lg font-bold mb-1 text-yellow-800"><i class="fas fa-yen-sign mr-2"></i>単価変更（適用日ベース）</h3>' +
+            '<div class="text-xs text-gray-600 mb-3">単価の変更はここで追加します（未来日は予約になります）。</div>' +
             '<div class="mb-4">' +
             '<label class="block text-sm font-bold text-yellow-700 mb-2">上代商品（希望小売価格あり）</label>' +
             '<div class="flex gap-4">' +
@@ -2687,12 +2775,21 @@ app.get('/products', async (c) => {
             
             // 通常商品価格
             '<div id="normalPriceSection" class="' + ((data && data.is_wholesale) ? 'hidden' : '') + '">' +
-            '<div class="grid grid-cols-1 md:grid-cols-3 gap-6">' +
-            '<div><label class="block text-sm font-medium text-gray-700 mb-1">単価</label>' +
-            '<input type="number" name="unit_price" id="unitPriceInput" value="' + (data ? (data.unit_price || 0) : 0) + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
-            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価</label>' +
-            '<input type="number" name="cost_price" id="costPriceNormal" value="' + (data ? (data.cost_price || 0) : 0) + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
-            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（自動計算）</label>' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">適用日 *</label>' +
+            '<input type="date" id="priceHistoryEffectiveDateNormal" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryEffectiveDateErrorNormal" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価 *</label>' +
+            '<input type="number" name="cost_price" id="costPriceNormal" value="' + (data ? (data.cost_price || 0) : 0) + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryCostPriceErrorNormal" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">単価（卸価格） *</label>' +
+            '<input type="number" name="unit_price" id="unitPriceInput" value="' + (data ? (data.unit_price || 0) : 0) + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryListPriceErrorNormal" class="mt-1 text-sm text-red-600 hidden"></p></div>' +
+            '</div>' +
+            '<div class="grid grid-cols-1 md:grid-cols-1 gap-4 mt-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（原価/単価）</label>' +
             '<div class="flex items-center"><input type="text" id="costRateNormalDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
             '</div></div>' +
             
@@ -2703,73 +2800,43 @@ app.get('/products', async (c) => {
             '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="wholesale_mode" id="wholesaleModeRate" value="rate" checked class="w-4 h-4 text-blue-600" /><span class="ml-2">掛け率で計算（推奨）</span></label>' +
             '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="wholesale_mode" id="wholesaleModeManual" value="manual" class="w-4 h-4 text-blue-600" /><span class="ml-2">下代を手入力（掛け率を逆算）</span></label>' +
             '</div>' +
-            '<div class="grid grid-cols-1 md:grid-cols-4 gap-4">' +
-            '<div><label class="block text-sm font-bold text-yellow-700 mb-1">上代（希望小売価格）</label>' +
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">適用日 *</label>' +
+            '<input type="date" id="priceHistoryEffectiveDateWholesale" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryEffectiveDateErrorWholesale" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価 *</label>' +
+            '<input type="number" name="cost_price_wholesale" id="costPriceWholesale" value="' + (data ? (data.cost_price || 0) : 0) + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryCostPriceErrorWholesale" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">上代 *</label>' +
             '<input type="number" name="retail_price" id="retailPriceInput" value="' + (data ? (data.retail_price || 0) : 0) + '" class="w-full border-2 border-yellow-400 rounded-lg px-3 py-2 focus:ring-2 focus:ring-yellow-500" /></div>' +
-            '<div><label class="block text-sm font-bold text-yellow-700 mb-1">原価</label>' +
-            '<input type="number" name="cost_price_wholesale" id="costPriceWholesale" value="' + (data ? (data.cost_price || 0) : 0) + '" class="w-full border-2 border-yellow-400 rounded-lg px-3 py-2 focus:ring-2 focus:ring-yellow-500" /></div>' +
-            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（自動計算）</label>' +
-            '<div class="flex items-center"><input type="text" id="costRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" placeholder="-" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
+            '<p id="priceHistoryListPriceErrorWholesale" class="mt-1 text-sm text-red-600 hidden"></p></div>' +
+            '</div>' +
+            '<div id="wholesaleExtraFieldsWrapper" class="' + ((data && data.is_wholesale) ? '' : 'hidden') + '">' +
+            '<div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">下代 *</label>' +
+            '<input type="number" id="wholesalePriceInput" min="0" step="1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p id="priceHistoryWholesalePriceErrorWholesale" class="mt-1 text-sm text-red-600 hidden"></p>' +
+            '</div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">掛け率</label>' +
             '<div class="flex items-center"><input type="number" name="discount_rate" id="discountRateInput" value="' + (data ? (data.discount_rate || 100) : 100) + '" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">原価率（原価/下代）</label>' +
+            '<div class="flex items-center"><input type="text" id="costRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" placeholder="-" /><span class="ml-2 font-bold text-gray-600">%</span></div></div>' +
             '</div>' +
-            '<div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">' +
-            '<div><label class="block text-sm font-medium text-gray-700 mb-1">下代（卸価格）</label>' +
-            '<input type="number" id="wholesalePriceInput" min="0" step="1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<div class="mt-2 text-sm text-gray-500">下代 = 上代 × 掛け率</div>' +
             '</div>' +
-            '<div class="text-sm text-gray-500 flex items-center">下代 = 上代 × 掛け率</div>' +
-            '</div>' +
-            '</div>' +
-            
-            // 単価変更履歴
-            '<div class="bg-white rounded-lg border border-gray-200 p-5">' +
-            '<h3 class="text-lg font-bold mb-4 text-gray-800"><i class="fas fa-history mr-2 text-blue-600"></i>単価変更履歴（適用日ベース）</h3>' +
-            '<div class="mb-4 text-xs text-gray-500">最新3件を表示します。未来日も予約単価として表示されます。</div>' +
-            '<div id="priceHistoryList" class="space-y-3">' +
-            '<div id="priceHistoryEmpty" class="text-sm text-gray-400">履歴がありません</div>' +
-            '</div>' +
-            '<div class="mt-5 border-t pt-4">' +
-            '<div class="mb-3 text-sm text-gray-600">下代の決め方：</div>' +
-            '<div class="flex gap-4 mb-4">' +
-            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="price_history_mode" id="priceHistoryModeRate" value="rate" checked class="w-4 h-4 text-blue-600" /><span class="ml-2">掛け率で計算（推奨）</span></label>' +
-            '<label class="flex items-center cursor-pointer text-sm"><input type="radio" name="price_history_mode" id="priceHistoryModeManual" value="manual" class="w-4 h-4 text-blue-600" /><span class="ml-2">下代を手入力（掛け率を逆算）</span></label>' +
-            '</div>' +
-            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">適用日 *</label>' +
-            '<input type="date" id="priceHistoryEffectiveDate" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            '<p id="priceHistoryEffectiveDateError" class="mt-1 text-sm text-red-600 hidden"></p>' +
-            '</div>' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">原価 *</label>' +
-            '<input type="number" id="priceHistoryCostPrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            '<p id="priceHistoryCostPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
-            '</div>' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">上代 *</label>' +
-            '<input type="number" id="priceHistoryListPrice" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            '<p id="priceHistoryListPriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
-            '</div>' +
-            '</div>' +
-            '<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">下代 *</label>' +
-            '<input type="number" id="priceHistoryWholesalePrice" min="0" step="1" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
-            '<p id="priceHistoryWholesalePriceError" class="mt-1 text-sm text-red-600 hidden"></p>' +
-            '</div>' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">掛け率</label>' +
-            '<div class="flex items-center"><input type="number" id="priceHistoryRateInput" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /><span class="ml-2 font-bold text-gray-600">%</span></div>' +
-            '</div>' +
-            '<div>' +
-            '<label class="block text-sm font-medium text-gray-700 mb-1">原価率（自動計算）</label>' +
-            '<div class="flex items-center"><input type="text" id="priceHistoryCostRateDisplay" readonly class="w-full border rounded-lg px-3 py-2 bg-gray-100 text-gray-700 font-bold" placeholder="-" /><span class="ml-2 font-bold text-gray-600">%</span></div>' +
             '</div>' +
             '</div>' +
             '<div class="mt-4 flex items-center gap-2">' +
             '<button type="button" id="addPriceHistoryBtn" class="' + (isNew ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 hover:bg-blue-700 text-white') + ' font-bold py-2 px-4 rounded-lg text-sm" ' + (isNew ? 'disabled' : '') + '>履歴追加</button>' +
+            '<button type="button" id="cancelPriceHistoryBtn" class="hidden bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded-lg text-sm">キャンセル</button>' +
             (isNew ? '<span class="text-xs text-gray-400">※保存後に追加できます</span>' : '') +
             '</div>' +
+            '<div class="mt-6 border-t pt-4">' +
+            '<h4 class="text-sm font-bold text-gray-700 mb-3">単価変更履歴（最新3件）</h4>' +
+            '<div id="priceHistoryList" class="space-y-3">' +
+            '<div id="priceHistoryEmpty" class="text-sm text-gray-400">履歴がありません</div>' +
             '</div>' +
             '</div>' +
             
@@ -2811,20 +2878,69 @@ app.get('/products', async (c) => {
           var unitPriceInput = document.getElementById('unitPriceInput');
           var costPriceNormal = document.getElementById('costPriceNormal');
           var costRateNormalDisplay = document.getElementById('costRateNormalDisplay');
+          var wholesaleExtraFieldsWrapper = document.getElementById('wholesaleExtraFieldsWrapper');
           var productCodeInput = document.getElementById('productCodeInput');
           var janCodeInput = document.getElementById('janCodeInput');
           var productCodeError = document.getElementById('productCodeError');
           var janCodeError = document.getElementById('janCodeError');
           
-          var priceHistoryModeRate = document.getElementById('priceHistoryModeRate');
-          var priceHistoryModeManual = document.getElementById('priceHistoryModeManual');
-          var priceHistoryEffectiveDate = document.getElementById('priceHistoryEffectiveDate');
-          var priceHistoryCostPrice = document.getElementById('priceHistoryCostPrice');
-          var priceHistoryWholesalePrice = document.getElementById('priceHistoryWholesalePrice');
-          var priceHistoryListPrice = document.getElementById('priceHistoryListPrice');
+          var priceHistoryEffectiveDateNormal = document.getElementById('priceHistoryEffectiveDateNormal');
+          var priceHistoryEffectiveDateWholesale = document.getElementById('priceHistoryEffectiveDateWholesale');
+          var priceHistoryEffectiveDate = null;
+          var priceHistoryEffectiveDateErrorNormal = document.getElementById('priceHistoryEffectiveDateErrorNormal');
+          var priceHistoryEffectiveDateErrorWholesale = document.getElementById('priceHistoryEffectiveDateErrorWholesale');
+          var priceHistoryCostPriceErrorNormal = document.getElementById('priceHistoryCostPriceErrorNormal');
+          var priceHistoryCostPriceErrorWholesale = document.getElementById('priceHistoryCostPriceErrorWholesale');
+          var priceHistoryListPriceErrorNormal = document.getElementById('priceHistoryListPriceErrorNormal');
+          var priceHistoryListPriceErrorWholesale = document.getElementById('priceHistoryListPriceErrorWholesale');
+          var priceHistoryWholesalePriceErrorWholesale = document.getElementById('priceHistoryWholesalePriceErrorWholesale');
+          var priceHistoryCostPrice = null;
+          var priceHistoryWholesalePrice = null;
+          var priceHistoryListPrice = null;
+          var priceHistoryModeRate = null;
+          var priceHistoryModeManual = null;
           var priceHistoryRateInput = document.getElementById('priceHistoryRateInput');
           var priceHistoryCostRateDisplay = document.getElementById('priceHistoryCostRateDisplay');
+          var priceHistoryList = document.getElementById('priceHistoryList');
+          var addPriceHistoryBtn = document.getElementById('addPriceHistoryBtn');
+          var cancelPriceHistoryBtn = document.getElementById('cancelPriceHistoryBtn');
+          var priceSettingNextReservation = document.getElementById('priceSettingNextReservation');
+          var activePriceNextChange = document.getElementById('activePriceNextChange');
           
+          if (priceHistoryEffectiveDateNormal) {
+            priceHistoryEffectiveDateNormal.addEventListener('input', updateAddPriceHistoryButtonState);
+          }
+          if (priceHistoryEffectiveDateWholesale) {
+            priceHistoryEffectiveDateWholesale.addEventListener('input', updateAddPriceHistoryButtonState);
+          }
+          
+          if (priceHistoryEffectiveDateNormal) {
+            priceHistoryEffectiveDateNormal.addEventListener('input', updateAddPriceHistoryButtonState);
+          }
+          if (priceHistoryEffectiveDateWholesale) {
+            priceHistoryEffectiveDateWholesale.addEventListener('input', updateAddPriceHistoryButtonState);
+          }
+          var activePriceNormalSection = document.getElementById('activePriceNormalSection');
+          var activePriceWholesaleSection = document.getElementById('activePriceWholesaleSection');
+          var activeUnitPrice = document.getElementById('activeUnitPrice');
+          var activeCostPriceNormal = document.getElementById('activeCostPriceNormal');
+          var activeCostRateNormal = document.getElementById('activeCostRateNormal');
+          var activeListPrice = document.getElementById('activeListPrice');
+          var activeWholesalePrice = document.getElementById('activeWholesalePrice');
+          var activeCostPriceWholesale = document.getElementById('activeCostPriceWholesale');
+          var activeDiscountRate = document.getElementById('activeDiscountRate');
+          var activeCostRateWholesale = document.getElementById('activeCostRateWholesale');
+          var priceHistoryItems = [];
+          var editingPriceHistoryId = null;
+          var activePriceSnapshot = data ? {
+            is_wholesale: data.is_wholesale || 0,
+            unit_price: data.unit_price,
+            cost_price: data.cost_price,
+            retail_price: data.retail_price,
+            discount_rate: data.discount_rate,
+            wholesale_price: data.unit_price
+          } : null;
+
           function showFieldError(element, message) {
             if (!element) return;
             element.textContent = message;
@@ -2851,7 +2967,10 @@ app.get('/products', async (c) => {
           function setInputReadonly(input, readonly) {
             if (!input) return;
             input.readOnly = readonly;
+          input.disabled = readonly;
             input.classList.toggle('bg-gray-100', readonly);
+          input.classList.toggle('text-gray-500', readonly);
+          input.classList.toggle('cursor-not-allowed', readonly);
           }
           
           function setRateValue(input, value) {
@@ -3020,18 +3139,40 @@ app.get('/products', async (c) => {
           wholesaleRadios.forEach(function(radio) {
             radio.addEventListener('change', function() {
               var isWholesale = this.value === '1';
-              normalSection.classList.toggle('hidden', isWholesale);
-              wholesaleSection.classList.toggle('hidden', !isWholesale);
+              if (normalSection && wholesaleSection) {
+                normalSection.classList.toggle('hidden', isWholesale);
+                wholesaleSection.classList.toggle('hidden', !isWholesale);
+              }
+              if (wholesaleExtraFieldsWrapper) {
+                wholesaleExtraFieldsWrapper.classList.toggle('hidden', !isWholesale);
+              }
+              if (activePriceSnapshot) {
+                activePriceSnapshot.is_wholesale = isWholesale ? 1 : 0;
+                updateActivePriceCard();
+              }
               if (isWholesale) {
-              updateWholesaleCalculations();
+                applyMsrpModeState(true);
               } else {
                 calculateNormalCostRate();
               }
+              syncPriceHistoryInputRefs();
+              updateAddPriceHistoryButtonState();
+              clearPriceHistoryErrors();
+              updatePriceHistoryLayout();
             });
           });
+          if (normalSection && wholesaleSection) {
+            var initialWholesale = isWholesaleModeSelected();
+            normalSection.classList.toggle('hidden', initialWholesale);
+            wholesaleSection.classList.toggle('hidden', !initialWholesale);
+            if (initialWholesale) {
+              applyMsrpModeState(true);
+            }
+          }
           
           // 通常商品の原価率計算
           function calculateNormalCostRate() {
+          if (!unitPriceInput || !costPriceNormal || !costRateNormalDisplay) return;
             var unitPrice = parseFloat(unitPriceInput.value) || 0;
             var cost = parseFloat(costPriceNormal.value) || 0;
             
@@ -3041,13 +3182,33 @@ app.get('/products', async (c) => {
               costRateNormalDisplay.value = '-';
             }
           }
-          
-          unitPriceInput.addEventListener('input', calculateNormalCostRate);
-          costPriceNormal.addEventListener('input', calculateNormalCostRate);
-          calculateNormalCostRate(); // 初期計算
-          
+        
+        if (unitPriceInput) {
+          unitPriceInput.addEventListener('input', function() {
+            calculateNormalCostRate();
+            updatePriceHistoryCalculations();
+          });
+        }
+        if (costPriceNormal) {
+          costPriceNormal.addEventListener('input', function() {
+            calculateNormalCostRate();
+            updatePriceHistoryCalculations();
+          });
+        }
+        calculateNormalCostRate();
+        
         var isUpdatingWholesale = false;
+        function applyMsrpModeState(forceRateMode) {
+          if (!wholesaleModeRate || !wholesaleModeManual) return;
+          if (forceRateMode) {
+            wholesaleModeRate.checked = true;
+            wholesaleModeManual.checked = false;
+          }
+          applyWholesaleMode();
+          updateWholesaleCalculations();
+        }
         function applyWholesaleMode() {
+          if (!wholesaleModeRate || !wholesaleModeManual || !wholesalePriceInput || !discountRateInput) return;
           if (wholesaleModeRate && wholesaleModeRate.checked) {
             setInputReadonly(wholesalePriceInput, true);
             setInputReadonly(discountRateInput, false);
@@ -3059,6 +3220,7 @@ app.get('/products', async (c) => {
         
         function updateWholesaleCalculations() {
           if (isUpdatingWholesale) return;
+          if (!retailPriceInput || !costPriceWholesale || !discountRateInput || !wholesalePriceInput || !costRateDisplay) return;
           isUpdatingWholesale = true;
           
           var retail = window.SmartBill.parseNumber(retailPriceInput && retailPriceInput.value);
@@ -3083,27 +3245,32 @@ app.get('/products', async (c) => {
         
         if (wholesaleModeRate) {
           wholesaleModeRate.addEventListener('change', function() {
-            applyWholesaleMode();
-            updateWholesaleCalculations();
+            applyMsrpModeState(false);
           });
         }
         if (wholesaleModeManual) {
           wholesaleModeManual.addEventListener('change', function() {
-            applyWholesaleMode();
-            updateWholesaleCalculations();
+            applyMsrpModeState(false);
           });
         }
         
         if (retailPriceInput) {
-          retailPriceInput.addEventListener('input', updateWholesaleCalculations);
+          retailPriceInput.addEventListener('input', function() {
+            updateWholesaleCalculations();
+            updatePriceHistoryCalculations();
+          });
         }
         if (costPriceWholesale) {
-          costPriceWholesale.addEventListener('input', updateWholesaleCalculations);
+          costPriceWholesale.addEventListener('input', function() {
+            updateWholesaleCalculations();
+            updatePriceHistoryCalculations();
+          });
         }
         if (discountRateInput) {
           discountRateInput.addEventListener('input', function() {
             if (wholesaleModeRate && wholesaleModeRate.checked) {
               updateWholesaleCalculations();
+              updatePriceHistoryCalculations();
             }
           });
         }
@@ -3111,15 +3278,31 @@ app.get('/products', async (c) => {
           wholesalePriceInput.addEventListener('input', function() {
             if (wholesaleModeManual && wholesaleModeManual.checked) {
               updateWholesaleCalculations();
+              updatePriceHistoryCalculations();
             }
           });
         }
+
+        applyMsrpModeState(false);
         
-        applyWholesaleMode();
-        updateWholesaleCalculations();
+        function syncPriceHistoryInputRefs() {
+          var isWholesale = document.querySelector('input[name="is_wholesale"]:checked')?.value === '1';
+          priceHistoryEffectiveDate = isWholesale ? priceHistoryEffectiveDateWholesale : priceHistoryEffectiveDateNormal;
+          priceHistoryCostPrice = isWholesale ? costPriceWholesale : costPriceNormal;
+          priceHistoryWholesalePrice = isWholesale ? wholesalePriceInput : null;
+          priceHistoryListPrice = isWholesale ? retailPriceInput : unitPriceInput;
+          priceHistoryRateInput = isWholesale ? discountRateInput : null;
+          priceHistoryCostRateDisplay = isWholesale ? costRateDisplay : costRateNormalDisplay;
+          priceHistoryModeRate = wholesaleModeRate;
+          priceHistoryModeManual = wholesaleModeManual;
+        }
+
+        syncPriceHistoryInputRefs();
+        updateAddPriceHistoryButtonState();
         
         var isUpdatingPriceHistory = false;
         function applyPriceHistoryMode() {
+          if (!isWholesaleModeSelected()) return;
           if (!priceHistoryWholesalePrice || !priceHistoryRateInput) return;
           if (priceHistoryModeRate && priceHistoryModeRate.checked) {
             setInputReadonly(priceHistoryWholesalePrice, true);
@@ -3134,6 +3317,16 @@ app.get('/products', async (c) => {
           if (isUpdatingPriceHistory) return;
           isUpdatingPriceHistory = true;
           
+          if (!isWholesaleModeSelected()) {
+            calculateNormalCostRate();
+            isUpdatingPriceHistory = false;
+            return;
+          }
+          if (!priceHistoryListPrice || !priceHistoryWholesalePrice || !priceHistoryRateInput) {
+            isUpdatingPriceHistory = false;
+            return;
+          }
+
           var retail = window.SmartBill.parseNumber(priceHistoryListPrice && priceHistoryListPrice.value);
           var cost = window.SmartBill.parseNumber(priceHistoryCostPrice && priceHistoryCostPrice.value);
           var rate = window.SmartBill.parseNumber(priceHistoryRateInput && priceHistoryRateInput.value);
@@ -3194,8 +3387,583 @@ app.get('/products', async (c) => {
         
         applyPriceHistoryMode();
         updatePriceHistoryCalculations();
+        updateActivePriceCard();
+        updateNextChangeLabel(null);
+        updatePriceHistoryLayout();
+
+        function updatePriceHistoryLayout() {
+          return;
+        }
+
+        function clearPriceHistoryErrors() {
+          clearFieldError(priceHistoryEffectiveDateErrorNormal);
+          clearFieldError(priceHistoryEffectiveDateErrorWholesale);
+          clearFieldError(priceHistoryCostPriceErrorNormal);
+          clearFieldError(priceHistoryCostPriceErrorWholesale);
+          clearFieldError(priceHistoryListPriceErrorNormal);
+          clearFieldError(priceHistoryListPriceErrorWholesale);
+          clearFieldError(priceHistoryWholesalePriceErrorWholesale);
+        }
+
+        function showPriceHistoryError(message) {
+          showFieldError(getEffectiveDateError(), message);
+        }
+
+        function showPriceHistoryAlert(message) {
+          var text = message || 'エラーが発生しました。';
+          if (window.SmartBill && window.SmartBill.showConfirmDialog) {
+            window.SmartBill.showConfirmDialog({
+              title: 'エラー',
+              message: text,
+              confirmText: 'OK',
+              cancelText: '',
+              icon: 'fa-times-circle',
+              type: 'danger'
+            });
+          } else {
+            alert(text);
+          }
+        }
+
+        function updateAddPriceHistoryButtonState() {
+          if (!addPriceHistoryBtn || isNew) return;
+          var effectiveInput = getEffectiveDateInput();
+          var hasDate = !!(effectiveInput && effectiveInput.value);
+          addPriceHistoryBtn.disabled = !hasDate;
+          addPriceHistoryBtn.classList.toggle('bg-gray-200', !hasDate);
+          addPriceHistoryBtn.classList.toggle('text-gray-400', !hasDate);
+          addPriceHistoryBtn.classList.toggle('bg-blue-600', hasDate && !editingPriceHistoryId);
+          addPriceHistoryBtn.classList.toggle('hover:bg-blue-700', hasDate && !editingPriceHistoryId);
+          addPriceHistoryBtn.classList.toggle('bg-green-600', hasDate && editingPriceHistoryId);
+          addPriceHistoryBtn.classList.toggle('hover:bg-green-700', hasDate && editingPriceHistoryId);
+        }
+
+        function isWholesaleModeSelected() {
+          return document.querySelector('input[name="is_wholesale"]:checked')?.value === '1';
+        }
+
+        function getEffectiveDateInput() {
+          return isWholesaleModeSelected() ? priceHistoryEffectiveDateWholesale : priceHistoryEffectiveDateNormal;
+        }
+
+        function getEffectiveDateError() {
+          return isWholesaleModeSelected() ? priceHistoryEffectiveDateErrorWholesale : priceHistoryEffectiveDateErrorNormal;
+        }
+
+        function getCostPriceError() {
+          return isWholesaleModeSelected() ? priceHistoryCostPriceErrorWholesale : priceHistoryCostPriceErrorNormal;
+        }
+
+        function getListPriceError() {
+          return isWholesaleModeSelected() ? priceHistoryListPriceErrorWholesale : priceHistoryListPriceErrorNormal;
+        }
+
+        function getWholesalePriceError() {
+          return priceHistoryWholesalePriceErrorWholesale;
+        }
+
+        function formatCurrency(value) {
+          if (value === null || value === undefined || value === '') return '-';
+          return '¥' + Number(value || 0).toLocaleString();
+        }
+
+        function formatRate(value) {
+          if (value === null || value === undefined || value === '') return '-';
+          return Number(value).toFixed(2) + '%';
+        }
+
+        function updateActivePriceCard() {
+          if (!activePriceSnapshot) return;
+          if (activePriceNormalSection && activePriceWholesaleSection) {
+            var isWholesaleActive = Boolean(Number(activePriceSnapshot.is_wholesale || 0));
+            activePriceNormalSection.classList.toggle('hidden', isWholesaleActive);
+            activePriceWholesaleSection.classList.toggle('hidden', !isWholesaleActive);
+          }
+
+          var normalUnit = activePriceSnapshot.unit_price;
+          var normalCost = activePriceSnapshot.cost_price;
+          var normalRate = (normalUnit && normalUnit !== 0)
+            ? Math.round((normalCost || 0) / normalUnit * 100)
+            : null;
+
+          if (activeUnitPrice) activeUnitPrice.textContent = formatCurrency(normalUnit);
+          if (activeCostPriceNormal) activeCostPriceNormal.textContent = formatCurrency(normalCost);
+          if (activeCostRateNormal) activeCostRateNormal.textContent = normalRate === null ? '-' : normalRate + '%';
+
+          var listPrice = activePriceSnapshot.list_price ?? activePriceSnapshot.retail_price;
+          var wholesalePrice = activePriceSnapshot.wholesale_price ?? activePriceSnapshot.unit_price;
+          var costPrice = activePriceSnapshot.cost_price;
+          var rateValue = (listPrice && listPrice !== 0)
+            ? (Number(wholesalePrice || 0) / listPrice * 100)
+            : null;
+          var wholesaleCostRate = (wholesalePrice && wholesalePrice !== 0)
+            ? (Number(costPrice || 0) / wholesalePrice * 100)
+            : null;
+
+          if (activeListPrice) activeListPrice.textContent = formatCurrency(listPrice);
+          if (activeWholesalePrice) activeWholesalePrice.textContent = formatCurrency(wholesalePrice);
+          if (activeCostPriceWholesale) activeCostPriceWholesale.textContent = formatCurrency(costPrice);
+          if (activeDiscountRate) activeDiscountRate.textContent = rateValue === null ? '-' : rateValue.toFixed(2) + '%';
+          if (activeCostRateWholesale) activeCostRateWholesale.textContent = wholesaleCostRate === null ? '-' : wholesaleCostRate.toFixed(2) + '%';
+        }
+
+        function updateNextChangeLabel(nextItem) {
+          var text = nextItem && nextItem.effective_date ? nextItem.effective_date : 'なし';
+          if (activePriceNextChange) {
+            if (nextItem && nextItem.effective_date) {
+              activePriceNextChange.innerHTML =
+                '次回単価変更日：' +
+                text +
+                '<span class="ml-2 inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 text-xs font-bold px-2 py-0.5">予約あり</span>';
+            } else {
+              activePriceNextChange.textContent = '次回単価変更日：なし';
+            }
+          }
+          if (priceSettingNextReservation) {
+            if (nextItem && nextItem.effective_date) {
+              priceSettingNextReservation.textContent = '次回単価変更日：' + nextItem.effective_date;
+              priceSettingNextReservation.classList.remove('hidden');
+            } else {
+              priceSettingNextReservation.textContent = '';
+              priceSettingNextReservation.classList.add('hidden');
+            }
+          }
+        }
+
+        function setPriceHistoryEditMode(item) {
+          if (!item) return;
+          editingPriceHistoryId = item.id;
+          var effectiveInput = getEffectiveDateInput();
+          if (effectiveInput) effectiveInput.value = item.effective_date || '';
+          if (isWholesaleModeSelected()) {
+            if (costPriceWholesale) costPriceWholesale.value = item.cost_price ?? '';
+            if (wholesalePriceInput) wholesalePriceInput.value = item.wholesale_price ?? '';
+            if (retailPriceInput) retailPriceInput.value = item.list_price ?? '';
+          } else {
+            if (costPriceNormal) costPriceNormal.value = item.cost_price ?? '';
+            if (unitPriceInput) unitPriceInput.value = item.wholesale_price ?? '';
+          }
+          updatePriceHistoryCalculations();
+          if (addPriceHistoryBtn) {
+            addPriceHistoryBtn.textContent = '更新';
+            addPriceHistoryBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            addPriceHistoryBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+          }
+          if (cancelPriceHistoryBtn) cancelPriceHistoryBtn.classList.remove('hidden');
+          updateAddPriceHistoryButtonState();
+          renderPriceHistoryList(priceHistoryItems);
+        }
+
+        function clearPriceHistoryEditMode(keepValues) {
+          editingPriceHistoryId = null;
+          if (addPriceHistoryBtn) {
+            addPriceHistoryBtn.textContent = '履歴追加';
+            addPriceHistoryBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+            addPriceHistoryBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+          }
+          if (cancelPriceHistoryBtn) cancelPriceHistoryBtn.classList.add('hidden');
+          var effectiveInput = getEffectiveDateInput();
+          if (effectiveInput) effectiveInput.value = '';
+          if (!keepValues) {
+            if (unitPriceInput) unitPriceInput.value = '';
+            if (costPriceNormal) costPriceNormal.value = '';
+            if (costRateNormalDisplay) costRateNormalDisplay.value = '-';
+            if (retailPriceInput) retailPriceInput.value = '';
+            if (costPriceWholesale) costPriceWholesale.value = '';
+            if (wholesalePriceInput) wholesalePriceInput.value = '';
+            if (discountRateInput) discountRateInput.value = '';
+            if (priceHistoryRateInput) priceHistoryRateInput.value = '';
+            if (priceHistoryCostRateDisplay) priceHistoryCostRateDisplay.value = '-';
+          }
+          updatePriceHistoryCalculations();
+          clearPriceHistoryErrors();
+          renderPriceHistoryList(priceHistoryItems);
+          updateAddPriceHistoryButtonState();
+        }
+
+        function getTodayString() {
+          var formatter = new Intl.DateTimeFormat('ja-JP', {
+            timeZone: 'Asia/Tokyo',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+          });
+          var parts = formatter.formatToParts(new Date());
+          var year = '';
+          var month = '';
+          var day = '';
+          for (var i = 0; i < parts.length; i++) {
+            if (parts[i].type === 'year') year = parts[i].value;
+            if (parts[i].type === 'month') month = parts[i].value;
+            if (parts[i].type === 'day') day = parts[i].value;
+          }
+          return year + '-' + month + '-' + day;
+        }
+
+        function normalizeYmd(value) {
+          if (!value) return '';
+          var str = String(value);
+          if (!str) return '';
+          if (str.indexOf('T') !== -1) {
+            str = str.split('T')[0];
+          }
+          if (str.indexOf(' ') !== -1) {
+            str = str.split(' ')[0];
+          }
+          if (str.indexOf('/') !== -1) {
+            str = str.split('/').join('-');
+          }
+          if (str.length > 10) {
+            str = str.slice(0, 10);
+          }
+          if (str.length !== 10) return '';
+          return str;
+        }
+
+        function applyActivePriceToForm(activeItem) {
+          if (!activeItem) return;
+          if (unitPriceInput) unitPriceInput.value = activeItem.wholesale_price ?? '';
+          if (retailPriceInput) retailPriceInput.value = activeItem.list_price ?? '';
+          if (costPriceNormal) costPriceNormal.value = activeItem.cost_price ?? '';
+          if (costPriceWholesale) costPriceWholesale.value = activeItem.cost_price ?? '';
+          if (wholesalePriceInput) wholesalePriceInput.value = activeItem.wholesale_price ?? '';
+          if (discountRateInput) {
+            var rateBase = window.SmartBill.calcRateFromWholesale(
+              activeItem.list_price ?? '',
+              activeItem.wholesale_price ?? ''
+            );
+            setRateValue(discountRateInput, rateBase);
+          }
+          calculateNormalCostRate();
+          updateWholesaleCalculations();
+          updatePriceHistoryCalculations();
+        }
+
+        function updateNextReservationLabel(nextItem) {
+          updateNextChangeLabel(nextItem);
+        }
+
+        function syncPriceSettingsFromHistory(items) {
+          var todayStr = getTodayString();
+          var toDateString = function(value) {
+            return normalizeYmd(value);
+          };
+
+          var sorted = (items || []).slice().sort(function(a, b) {
+            var aStr = toDateString(a && a.effective_date);
+            var bStr = toDateString(b && b.effective_date);
+            if (!aStr && !bStr) return 0;
+            if (!aStr) return 1;
+            if (!bStr) return -1;
+            return bStr.localeCompare(aStr);
+          });
+
+          var activeItem = null;
+          for (var i = 0; i < sorted.length; i++) {
+            var dateStr = toDateString(sorted[i] && sorted[i].effective_date);
+            if (dateStr && dateStr <= todayStr) {
+              activeItem = sorted[i];
+              break;
+            }
+          }
+
+          if (activeItem) {
+            applyActivePriceToForm(activeItem);
+            activePriceSnapshot = {
+              is_wholesale: data && data.is_wholesale ? 1 : 0,
+              unit_price: activeItem.wholesale_price,
+              wholesale_price: activeItem.wholesale_price,
+              list_price: activeItem.list_price,
+              retail_price: activeItem.list_price,
+              cost_price: activeItem.cost_price
+            };
+            updateActivePriceCard();
+          }
+
+          var nextReservation = null;
+          for (var j = 0; j < sorted.length; j++) {
+            var futureStr = toDateString(sorted[j] && sorted[j].effective_date);
+            if (futureStr && futureStr > todayStr) {
+              nextReservation = sorted[j];
+            }
+          }
+          updateNextReservationLabel(nextReservation);
+        }
+
+        function getPriceSettingsPayload() {
+          var isWholesaleValue = document.querySelector('input[name="is_wholesale"]:checked');
+          var isWholesale = isWholesaleValue ? isWholesaleValue.value === '1' : false;
+          var costPrice = isWholesale
+            ? window.SmartBill.parseNumber(costPriceWholesale && costPriceWholesale.value)
+            : window.SmartBill.parseNumber(costPriceNormal && costPriceNormal.value);
+          var wholesalePrice = isWholesale
+            ? window.SmartBill.parseNumber(wholesalePriceInput && wholesalePriceInput.value)
+            : window.SmartBill.parseNumber(unitPriceInput && unitPriceInput.value);
+          var listPrice = isWholesale
+            ? window.SmartBill.parseNumber(retailPriceInput && retailPriceInput.value)
+            : window.SmartBill.parseNumber(unitPriceInput && unitPriceInput.value);
+
+          if (costPrice === null || wholesalePrice === null || listPrice === null) {
+            return null;
+          }
+
+          return {
+            effective_date: getTodayString(),
+            cost_price: costPrice,
+            wholesale_price: wholesalePrice,
+            list_price: listPrice
+          };
+        }
+
+        function upsertTodayPriceHistory(productId) {
+          var payload = getPriceSettingsPayload();
+          if (!payload) return Promise.resolve();
+
+          return axios
+            .get('/api/products/' + productId + '/price-history?limit=100')
+            .then(function(res) {
+              var items = res.data || [];
+              var existing = items.find(function(item) {
+                return normalizeYmd(item && item.effective_date) === normalizeYmd(payload && payload.effective_date);
+              });
+
+              if (existing && existing.id) {
+                return axios.put('/api/products/' + productId + '/price-history/' + existing.id, payload);
+              }
+              return axios.post('/api/products/' + productId + '/price-history', payload);
+            })
+            .then(function() {
+              loadPriceHistory();
+            })
+            .catch(function(e) {
+              var status = e && e.response && e.response.status;
+              var message = '';
+              if (e && e.response && e.response.data) {
+                message = e.response.data.error || JSON.stringify(e.response.data);
+              } else if (e && e.message) {
+                message = e.message;
+              } else {
+                message = String(e);
+              }
+              if (status === 409) {
+                showPriceHistoryAlert('同じ適用日の履歴は1件までです。修正したい場合は編集を使ってください');
+                return;
+              }
+              showPriceHistoryAlert(message);
+            });
+        }
+
+        function renderPriceHistoryList(items) {
+          if (!priceHistoryList) return;
+          priceHistoryItems = items || [];
+          var todayStr = getTodayString();
+          var sorted = (items || []).slice().sort(function(a, b) {
+            var aStr = normalizeYmd(a && a.effective_date);
+            var bStr = normalizeYmd(b && b.effective_date);
+            if (!aStr && !bStr) return 0;
+            if (!aStr) return 1;
+            if (!bStr) return -1;
+            return bStr.localeCompare(aStr);
+          });
+
+          var activeItemId = null;
+          var pastOrToday = (sorted || []).filter(function(item) {
+            var dateStr = normalizeYmd(item && item.effective_date);
+            return dateStr && dateStr <= todayStr;
+          });
+          if (pastOrToday.length > 0) {
+            pastOrToday.sort(function(a, b) {
+              var aStr = normalizeYmd(a && a.effective_date);
+              var bStr = normalizeYmd(b && b.effective_date);
+              if (!aStr && !bStr) return 0;
+              if (!aStr) return 1;
+              if (!bStr) return -1;
+              return bStr.localeCompare(aStr);
+            });
+            activeItemId = pastOrToday[0].id;
+          }
+
+          if (sorted.length === 0) {
+            priceHistoryList.innerHTML = '<div id="priceHistoryEmpty" class="text-sm text-gray-400">履歴がありません</div>';
+            return;
+          }
+
+          priceHistoryList.innerHTML = sorted.map(function(item) {
+            var effectiveDate = item.effective_date || '';
+            var costPrice = (item.cost_price !== null && item.cost_price !== undefined) ? item.cost_price : '';
+            var wholesalePrice = (item.wholesale_price !== null && item.wholesale_price !== undefined) ? item.wholesale_price : '';
+            var listPrice = (item.list_price !== null && item.list_price !== undefined) ? item.list_price : '';
+            var effectiveDateStr = normalizeYmd(effectiveDate);
+            var isFuture = effectiveDateStr && effectiveDateStr > todayStr;
+            var isActive = String(activeItemId) === String(item.id);
+            var isEditing = String(editingPriceHistoryId) === String(item.id);
+            var badgeText = isFuture ? '予約' : (isActive ? '適用中' : '');
+            var badgeClass = isFuture ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700';
+            var cardClass = 'border rounded-lg p-3 ' + (isEditing ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50');
+            return (
+              '<div class="' + cardClass + '" data-history-id="' + item.id + '">' +
+                '<div class="flex justify-between items-start mb-2 gap-2">' +
+                  '<div class="flex items-center gap-2">' +
+                    '<div class="text-sm font-bold text-gray-700">' + effectiveDate + '</div>' +
+                    (badgeText ? '<span class="text-[10px] px-2 py-0.5 rounded-full ' + badgeClass + '">' + badgeText + '</span>' : '') +
+                    (isEditing ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">編集中</span>' : '') +
+                  '</div>' +
+                  '<div class="flex items-center gap-1">' +
+                    '<button type="button" class="price-history-edit-btn text-xs text-blue-600 border border-blue-300 hover:bg-blue-50 hover:text-blue-800 px-2.5 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1" aria-label="履歴を編集" title="編集" data-history-id="' + item.id + '">✏️</button>' +
+                    '<button type="button" class="price-history-delete-btn text-xs text-red-600 border border-red-300 hover:bg-red-50 hover:text-red-800 px-2.5 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1" aria-label="履歴を削除" title="削除" data-history-id="' + item.id + '">🗑️</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="grid grid-cols-3 gap-2 text-xs text-gray-600">' +
+                  '<div>原価: <span class="font-bold text-gray-800">¥' + Number(costPrice || 0).toLocaleString() + '</span></div>' +
+                  '<div>下代: <span class="font-bold text-gray-800">¥' + Number(wholesalePrice || 0).toLocaleString() + '</span></div>' +
+                  '<div>上代: <span class="font-bold text-gray-800">¥' + Number(listPrice || 0).toLocaleString() + '</span></div>' +
+                '</div>' +
+              '</div>'
+            );
+          }).join('');
+
+          priceHistoryList.querySelectorAll('.price-history-edit-btn').forEach(function(button) {
+            button.addEventListener('click', function() {
+              var historyId = this.getAttribute('data-history-id');
+              var item = (priceHistoryItems || []).find(function(row) { return String(row.id) === String(historyId); });
+              if (!item) return;
+              clearPriceHistoryErrors();
+              setPriceHistoryEditMode(item);
+            });
+          });
+
+          priceHistoryList.querySelectorAll('.price-history-delete-btn').forEach(function(button) {
+            button.addEventListener('click', function() {
+              var historyId = this.getAttribute('data-history-id');
+              if (!historyId) return;
+              var confirmPromise = window.SmartBill && window.SmartBill.confirmDelete
+                ? window.SmartBill.confirmDelete('単価変更履歴')
+                : Promise.resolve(confirm('この履歴を削除しますか？'));
+
+              confirmPromise.then(function(confirmed) {
+                if (!confirmed) return;
+                axios.delete('/api/products/' + currentProductId + '/price-history/' + historyId)
+                  .then(function() {
+                    if (String(editingPriceHistoryId) === String(historyId)) {
+                      clearPriceHistoryEditMode();
+                    }
+                    loadPriceHistory();
+                  })
+                  .catch(function(e) {
+                    var message = '';
+                    if (e && e.response && e.response.data) {
+                      message = e.response.data.error || JSON.stringify(e.response.data);
+                    } else if (e && e.message) {
+                      message = e.message;
+                    } else {
+                      message = String(e);
+                    }
+                    showPriceHistoryAlert(message);
+                  });
+              });
+            });
+          });
+        }
+
+        function loadPriceHistory() {
+          if (!currentProductId) return;
+          axios.get('/api/products/' + currentProductId + '/price-history?limit=3')
+            .then(function(res) {
+              renderPriceHistoryList(res.data || []);
+              syncPriceSettingsFromHistory(res.data || []);
+            })
+            .catch(function(e) {
+              console.error(e);
+              renderPriceHistoryList([]);
+              updateNextReservationLabel(null);
+            });
+        }
+
+        function getPriceHistoryPayload() {
+          var effectiveDate = getEffectiveDateInput() && getEffectiveDateInput().value;
+          var costPrice = window.SmartBill.parseNumber((isWholesaleModeSelected() ? costPriceWholesale : costPriceNormal)?.value);
+          var wholesalePrice = window.SmartBill.parseNumber((isWholesaleModeSelected() ? wholesalePriceInput : unitPriceInput)?.value);
+          var listPrice = window.SmartBill.parseNumber((isWholesaleModeSelected() ? retailPriceInput : unitPriceInput)?.value);
+
+          if (!effectiveDate) {
+            showFieldError(getEffectiveDateError(), '適用日を入力してください');
+            return null;
+          }
+          if (costPrice === null) {
+            showFieldError(getCostPriceError(), '原価を入力してください');
+            return null;
+          }
+          if (isWholesaleModeSelected() && wholesalePrice === null) {
+            showFieldError(getWholesalePriceError(), '下代を入力してください');
+            return null;
+          }
+          if (listPrice === null) {
+            showFieldError(getListPriceError(), isWholesaleModeSelected() ? '上代を入力してください' : '単価を入力してください');
+            return null;
+          }
+
+          return {
+            effective_date: effectiveDate,
+            cost_price: costPrice,
+            wholesale_price: wholesalePrice,
+            list_price: listPrice
+          };
+        }
+
+        if (addPriceHistoryBtn) {
+          addPriceHistoryBtn.addEventListener('click', function() {
+            if (!currentProductId) return;
+            clearPriceHistoryErrors();
+            var payload = getPriceHistoryPayload();
+            if (!payload) return;
+
+            var request;
+            if (editingPriceHistoryId) {
+              request = axios.put('/api/products/' + currentProductId + '/price-history/' + editingPriceHistoryId, payload);
+            } else {
+              request = axios.post('/api/products/' + currentProductId + '/price-history', payload);
+            }
+
+            request
+              .then(function() {
+                loadPriceHistory();
+                clearPriceHistoryEditMode(true);
+              })
+              .catch(function(e) {
+                var status = e && e.response && e.response.status;
+                var message = '';
+                if (e && e.response && e.response.data) {
+                  message = e.response.data.error || JSON.stringify(e.response.data);
+                } else if (e && e.message) {
+                  message = e.message;
+                } else {
+                  message = String(e);
+                }
+
+                if (status === 409) {
+                  showPriceHistoryError('同じ適用日の履歴は1件までです。修正したい場合は編集を使ってください');
+                  return;
+                }
+
+                if (status === 400) {
+                  showPriceHistoryError(message);
+                  return;
+                }
+
+                showPriceHistoryError('保存に失敗しました。時間をおいて再度お試しください。');
+              });
+          });
+        }
+
+        if (cancelPriceHistoryBtn) {
+          cancelPriceHistoryBtn.addEventListener('click', function() {
+            clearPriceHistoryEditMode();
+          });
+        }
           
-          // 次の商品コード取得
+        loadPriceHistory();
+
+        // 次の商品コード取得
           var getNextCodeBtn = document.getElementById('getNextCode');
           if (getNextCodeBtn) {
             getNextCodeBtn.addEventListener('click', function() {
@@ -3288,9 +4056,15 @@ app.get('/products', async (c) => {
             var sendData = Object.fromEntries(formData);
             
             sendData.is_wholesale = parseInt(sendData.is_wholesale);
-            sendData.unit_price = parseFloat(sendData.unit_price) || 0;
-            sendData.retail_price = parseFloat(sendData.retail_price) || 0;
-            sendData.discount_rate = parseFloat(sendData.discount_rate) || 100;
+            if (sendData.is_wholesale) {
+              sendData.unit_price = parseFloat(wholesalePriceInput && wholesalePriceInput.value) || 0;
+              sendData.retail_price = parseFloat(retailPriceInput && retailPriceInput.value) || 0;
+              sendData.discount_rate = parseFloat(discountRateInput && discountRateInput.value) || 100;
+            } else {
+              sendData.unit_price = parseFloat(sendData.unit_price) || 0;
+              sendData.retail_price = 0;
+              sendData.discount_rate = 100;
+            }
             sendData.min_lot = parseInt(sendData.min_lot) || 1;
             sendData.category_id = sendData.category_id || null;
             sendData.tax_rate = sendData.tax_rate ? parseFloat(sendData.tax_rate) : null;
@@ -3370,9 +4144,13 @@ app.get('/products', async (c) => {
                 axios.get('/api/products').then(function(listRes) {
                   var newProduct = listRes.data.find(function(p) { return p.product_code === res.data.product_code; });
                   if (newProduct) {
-                    loadProductForm(newProduct.id);
+                    loadProductForm(newProduct.id).then(function() {
+                      upsertTodayPriceHistory(newProduct.id);
+                    });
                   }
                 });
+              } else if (currentProductId) {
+                upsertTodayPriceHistory(currentProductId);
               }
               window.SmartBill.showSuccessDialog('商品情報を保存しました。');
             }).catch(function(e) {
@@ -3677,8 +4455,8 @@ app.get('/deliveries', async (c) => {
                           <option value="">得意先を選択...</option>
                         </select>
                         {/* 選択された得意先の表示 */}
-                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-blue-50 rounded-lg flex items-center justify-between">
-                          <span id="selectedClientName" class="font-medium text-blue-800"></span>
+                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-gray-50 rounded-lg flex items-center justify-between">
+                          <span id="selectedClientName" class="font-medium text-gray-700"></span>
                           <button type="button" id="clearClientBtn" class="text-blue-600 hover:text-blue-800 text-sm">
                             <i class="fas fa-times"></i> クリア
                           </button>
@@ -3734,7 +4512,7 @@ app.get('/deliveries', async (c) => {
                 <div class="flex justify-end mb-6">
                   <div class="w-72 bg-gray-50 rounded-lg p-4">
                     <div class="flex justify-between py-2 border-b">
-                      <span class="text-gray-600">小計</span>
+                      <span id="subtotalLabel" class="text-gray-600">小計</span>
                       <span id="subtotalDisplay" class="font-bold">¥0</span>
                     </div>
                     <div id="taxSection" style="display: none;">
@@ -3747,7 +4525,7 @@ app.get('/deliveries', async (c) => {
                       </div>
                     </div>
                     <div class="flex justify-between py-3 text-lg">
-                      <span class="font-bold text-gray-800">合計</span>
+                      <span id="totalLabel" class="font-bold text-gray-800">合計</span>
                       <span id="totalDisplay" class="font-bold text-green-600">¥0</span>
                     </div>
                   </div>
@@ -3758,7 +4536,7 @@ app.get('/deliveries', async (c) => {
                   <label class="block text-sm font-medium text-gray-700 mb-1">
                     <i class="fas fa-sticky-note mr-1 text-yellow-500"></i>備考
                   </label>
-                  <textarea name="notes" rows="3" placeholder="納品書に印刷される備考欄"
+                  <textarea name="notes" rows={3} placeholder="納品書に印刷される備考欄"
                     class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"></textarea>
                 </div>
               </form>
@@ -3827,6 +4605,7 @@ app.get('/deliveries', async (c) => {
       </div>
 
       <script dangerouslySetInnerHTML={{__html: `
+        ${docHeaderTitleHelpers}
         // 状態管理
         var currentDeliveryId = null;
         var originalDeliveryStatus = null;
@@ -3842,6 +4621,89 @@ app.get('/deliveries', async (c) => {
         var lastSelectedClientId = localStorage.getItem('lastSelectedClientId');
         var companySettings = {};  // 自社設定（消費税表示設定など）
         var showTax = false;  // 消費税を表示するかどうか
+        var currentHeaderMode = null;
+        var currentHeaderIconHtml = '';
+
+        function setFormHeaderMode(mode, iconHtml) {
+          currentHeaderMode = mode;
+          currentHeaderIconHtml = iconHtml || '';
+        }
+
+        function getCurrentClientLabel() {
+          if (selectedClient) return getClientDisplayLabel(selectedClient);
+          var selectedName = document.getElementById('selectedClientName');
+          return selectedName ? normalizeHeaderText(selectedName.textContent) : '';
+        }
+
+        function updateFormHeaderTitle() {
+          if (currentHeaderMode !== 'new' && currentHeaderMode !== 'edit') return;
+          var titleEl = document.getElementById('formTitle');
+          if (!titleEl) return;
+          var docNoInput = document.querySelector('[name="delivery_no"]');
+          var docNo = normalizeHeaderText(docNoInput ? docNoInput.value : '');
+          var clientLabel = getCurrentClientLabel();
+          var titleText = buildDocHeaderTitle({
+            docTypeLabel: '納品',
+            mode: currentHeaderMode,
+            clientLabel: clientLabel,
+            docNo: docNo
+          });
+          if (!titleText) return;
+          titleEl.innerHTML = (currentHeaderIconHtml || '') + titleText;
+        }
+
+        function updateDeliverySummaryLabels() {
+          var subtotalLabel = document.getElementById('subtotalLabel');
+          var totalLabel = document.getElementById('totalLabel');
+          if (!subtotalLabel || !totalLabel) return;
+          if (showTax) {
+            subtotalLabel.textContent = '小計（税抜）';
+            totalLabel.textContent = '合計（税込）';
+          } else {
+            subtotalLabel.textContent = '小計';
+            totalLabel.textContent = '合計';
+          }
+        }
+
+        function isShowTaxOnDelivery(companyInfo) {
+          var setting = companyInfo && companyInfo.show_tax_on_estimate_delivery;
+          return Number(setting != null ? setting : 1) === 1;
+        }
+
+        function getDeliveryListDisplayTotal(delivery, companyInfo) {
+          var showTaxOn = isShowTaxOnDelivery(companyInfo);
+          var subtotal = delivery && delivery.subtotal != null
+            ? delivery.subtotal
+            : (delivery && delivery.total_amount != null && delivery.tax_amount != null
+              ? delivery.total_amount - delivery.tax_amount
+              : 0);
+          var total = delivery && delivery.total_amount != null
+            ? delivery.total_amount
+            : (delivery && delivery.tax_amount != null ? subtotal + delivery.tax_amount : subtotal);
+          return showTaxOn ? Number(total != null ? total : 0) : Number(subtotal != null ? subtotal : 0);
+        }
+
+        function getDeliveryListTotalHeaderLabel(companyInfo) {
+          return isShowTaxOnDelivery(companyInfo) ? '合計金額' : '合計金額（税抜）';
+        }
+
+        function updateDeliveryListTotalHeader() {
+          var tbody = document.getElementById('deliveryTableBody');
+          if (!tbody) return;
+          var table = tbody.closest ? tbody.closest('table') : null;
+          if (!table) {
+            var parent = tbody.parentElement;
+            while (parent && parent.tagName !== 'TABLE') {
+              parent = parent.parentElement;
+            }
+            table = parent;
+          }
+          if (!table) return;
+          var headerCell = table.querySelector('thead th:nth-child(4)');
+          if (headerCell) {
+            headerCell.textContent = getDeliveryListTotalHeaderLabel(companySettings);
+          }
+        }
         
         // 初期化
         async function init() {
@@ -3892,6 +4754,11 @@ app.get('/deliveries', async (c) => {
         async function loadCompanySettings() {
           var res = await axios.get('/api/company');
           companySettings = res.data || {};
+          updateDeliveryListTotalHeader();
+          updateDeliverySummaryLabels();
+          updateTaxDisplay(document.getElementById('clientSelect').value || null);
+          renderDeliveryTable();
+          renderSidebarDeliveries();
         }
         
         // 消費税表示を切り替える（納品）
@@ -3915,6 +4782,7 @@ app.get('/deliveries', async (c) => {
             taxSection.style.display = showTax ? 'block' : 'none';
           }
           
+          updateDeliverySummaryLabels();
           // 合計を再計算
           calculateTotals();
         }
@@ -3964,9 +4832,8 @@ app.get('/deliveries', async (c) => {
           if (!client) return;
           
           document.getElementById('clientSelect').value = clientId;
-          document.getElementById('clientSearchInput').value = '';
-          
           var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
           document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
           document.getElementById('selectedClientDisplay').classList.remove('hidden');
           
@@ -3990,6 +4857,7 @@ app.get('/deliveries', async (c) => {
           document.getElementById('clientInfo').classList.add('hidden');
           // 消費税表示をデフォルトに戻す
           updateTaxDisplay(null);
+          updateFormHeaderTitle();
           formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
         }
         
@@ -4016,8 +4884,9 @@ app.get('/deliveries', async (c) => {
             return;
           }
           container.innerHTML = res.data.map(function(d) {
+            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
             return '<div class="p-2 hover:bg-gray-50 rounded cursor-pointer text-xs border-b delivery-item" data-id="' + d.id + '">' +
-              '<div class="font-medium text-gray-800">' + d.delivery_no + '</div>' +
+              '<div class="font-medium text-gray-800">' + displayNo + '</div>' +
               '<div class="text-gray-500">' + (d.client_name || '得意先未設定') + '</div>' +
               '</div>';
           }).join('');
@@ -4032,11 +4901,13 @@ app.get('/deliveries', async (c) => {
           }
           tbody.innerHTML = deliveries.map(function(d) {
             var statusSelect = getStatusSelect(d.id, d.status);
+            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
+            var displayTotal = getDeliveryListDisplayTotal(d, companySettings);
             return '<tr class="hover:bg-gray-50 delivery-row" data-id="' + d.id + '">' +
-              '<td class="px-4 py-3 font-medium text-green-600 cursor-pointer delivery-cell" data-id="' + d.id + '">' + d.delivery_no + '</td>' +
+              '<td class="px-4 py-3 font-medium text-green-600 cursor-pointer delivery-cell" data-id="' + d.id + '">' + displayNo + '</td>' +
               '<td class="px-4 py-3 cursor-pointer delivery-cell" data-id="' + d.id + '">' + d.delivery_date + '</td>' +
               '<td class="px-4 py-3 cursor-pointer delivery-cell" data-id="' + d.id + '">' + (d.client_name || '-') + '</td>' +
-              '<td class="px-4 py-3 text-right font-bold cursor-pointer delivery-cell" data-id="' + d.id + '">¥' + (d.total_amount || 0).toLocaleString() + '</td>' +
+              '<td class="px-4 py-3 text-right font-bold cursor-pointer delivery-cell" data-id="' + d.id + '">¥' + displayTotal.toLocaleString() + '</td>' +
               '<td class="px-4 py-3 text-center">' + statusSelect + '</td>' +
               '<td class="px-4 py-3 text-center">' +
               '<button class="text-blue-600 hover:text-blue-800 edit-btn" data-id="' + d.id + '"><i class="fas fa-edit"></i></button>' +
@@ -4063,6 +4934,7 @@ app.get('/deliveries', async (c) => {
               editDelivery(id);
             });
           });
+          updateDeliveryListTotalHeader();
         }
         
         // ステータス選択プルダウン生成
@@ -4140,11 +5012,13 @@ app.get('/deliveries', async (c) => {
           }
           container.innerHTML = deliveries.slice(0, 20).map(function(d) {
             var isActive = currentDeliveryId === d.id;
+            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
+            var displayTotal = getDeliveryListDisplayTotal(d, companySettings);
             return '<div class="p-2 rounded cursor-pointer text-xs border-b delivery-item ' + (isActive ? 'bg-green-100 border-green-300' : 'hover:bg-gray-50') + '" data-id="' + d.id + '">' +
-              '<div class="font-medium ' + (isActive ? 'text-green-800' : 'text-gray-800') + '">' + d.delivery_no + '</div>' +
+              '<div class="font-medium ' + (isActive ? 'text-green-800' : 'text-gray-800') + '">' + displayNo + '</div>' +
               '<div class="text-gray-500 flex justify-between">' +
               '<span>' + (d.client_name || '得意先未設定') + '</span>' +
-              '<span>¥' + (d.total_amount || 0).toLocaleString() + '</span>' +
+              '<span>¥' + displayTotal.toLocaleString() + '</span>' +
               '</div></div>';
           }).join('');
         }
@@ -4298,6 +5172,7 @@ app.get('/deliveries', async (c) => {
           } else {
             document.getElementById('totalDisplay').textContent = '¥' + subtotal.toLocaleString();
           }
+          updateDeliverySummaryLabels();
         }
         
         // 商品モーダル（納品データ入力）
@@ -4487,6 +5362,7 @@ app.get('/deliveries', async (c) => {
             
             if (items.length === 0) addItemRow();
             
+            setFormHeaderMode('custom', '<i class="fas fa-file-import mr-2 text-purple-600"></i>');
             document.getElementById('formTitle').innerHTML = '<i class="fas fa-file-import mr-2 text-purple-600"></i>見積から作成: ' + estimate.estimate_no;
             document.getElementById('deleteDeliveryBtn').classList.add('hidden');
             document.getElementById('duplicateDeliveryBtn').classList.add('hidden');
@@ -4514,6 +5390,8 @@ app.get('/deliveries', async (c) => {
           if (!clientId) {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
+            updateTaxDisplay(null);
+            updateFormHeaderTitle();
             return;
           }
           
@@ -4521,9 +5399,15 @@ app.get('/deliveries', async (c) => {
           if (!selectedClient) return;
           
           clientInfoDiv.classList.remove('hidden');
+          var codeDisplay = selectedClient.client_code ? ' (' + selectedClient.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = selectedClient.client_name + codeDisplay;
+          var codeDisplay = selectedClient.client_code ? ' (' + selectedClient.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = selectedClient.client_name + codeDisplay;
+          updateTaxDisplay(clientId);
           
           var closingInfo = document.getElementById('clientClosingInfo');
           closingInfo.innerHTML = '<i class="fas fa-calendar text-blue-600 mr-1"></i>締日: ' + (selectedClient.closing_day || '未設定') + ' / 支払: ' + (selectedClient.payment_day || '未設定');
+          updateFormHeaderTitle();
         }
         
         // フォーム表示制御
@@ -4556,7 +5440,8 @@ app.get('/deliveries', async (c) => {
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="delivery_date"]').value = today;
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-truck mr-2 text-green-600"></i>新規納品作成';
+          setFormHeaderMode('new', '<i class="fas fa-truck mr-2 text-green-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteDeliveryBtn').classList.add('hidden');
           document.getElementById('duplicateDeliveryBtn').classList.add('hidden');
           document.getElementById('pdfDeliveryBtn').classList.add('hidden');
@@ -4570,6 +5455,7 @@ app.get('/deliveries', async (c) => {
           document.getElementById('clientSelect').value = '';
           
           renderItemsTable();
+          updateTaxDisplay(null);
           calculateTotals();
           showDetailView();
           formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -4607,7 +5493,8 @@ app.get('/deliveries', async (c) => {
           
           if (items.length === 0) addItemRow();
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-green-600"></i>納品編集: ' + data.delivery_no;
+          setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-green-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteDeliveryBtn').classList.remove('hidden');
           document.getElementById('duplicateDeliveryBtn').classList.remove('hidden');
           document.getElementById('pdfDeliveryBtn').classList.remove('hidden');
@@ -4618,13 +5505,13 @@ app.get('/deliveries', async (c) => {
             var client = clients.find(function(c) { return c.id == data.client_id; });
             if (client) {
               var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+              document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
               document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
               document.getElementById('selectedClientDisplay').classList.remove('hidden');
             }
           } else {
             document.getElementById('selectedClientDisplay').classList.add('hidden');
           }
-          document.getElementById('clientSearchInput').value = '';
           
           onClientChange();
           renderItemsTable();
@@ -4679,7 +5566,8 @@ app.get('/deliveries', async (c) => {
             
             window.SmartBill.showSuccessDialog('納品を保存しました');
             
-            document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-green-600"></i>納品編集: ' + data.delivery_no;
+            setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-green-600"></i>');
+            updateFormHeaderTitle();
             document.getElementById('deleteDeliveryBtn').classList.remove('hidden');
             document.getElementById('duplicateDeliveryBtn').classList.remove('hidden');
             document.getElementById('pdfDeliveryBtn').classList.remove('hidden');
@@ -4795,6 +5683,7 @@ app.get('/deliveries', async (c) => {
           
           document.querySelector('[name="status"]').value = 'draft';
           
+          setFormHeaderMode('custom', '<i class="fas fa-copy mr-2 text-purple-600"></i>');
           document.getElementById('formTitle').innerHTML = '<i class="fas fa-copy mr-2 text-purple-600"></i>納品複製（新規）';
           document.getElementById('deleteDeliveryBtn').classList.add('hidden');
           document.getElementById('duplicateDeliveryBtn').classList.add('hidden');
@@ -4871,7 +5760,11 @@ app.get('/deliveries', async (c) => {
           document.getElementById('autoNumberBtn').addEventListener('click', async function() {
             var res = await axios.get('/api/deliveries/next-no');
             document.querySelector('[name="delivery_no"]').value = res.data.next_no;
+            updateFormHeaderTitle();
             formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          });
+          document.querySelector('[name="delivery_no"]').addEventListener('input', function() {
+            updateFormHeaderTitle();
           });
           document.getElementById('addItemBtn').addEventListener('click', function() { addItemRow(); });
           
@@ -5209,8 +6102,8 @@ app.get('/estimates', async (c) => {
                           <option value="">得意先を選択...</option>
                         </select>
                         {/* 選択された得意先の表示 */}
-                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-blue-50 rounded-lg flex items-center justify-between">
-                          <span id="selectedClientName" class="font-medium text-blue-800"></span>
+                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-gray-50 rounded-lg flex items-center justify-between">
+                          <span id="selectedClientName" class="font-medium text-gray-700"></span>
                           <button type="button" id="clearClientBtn" class="text-blue-600 hover:text-blue-800 text-sm">
                             <i class="fas fa-times"></i> クリア
                           </button>
@@ -5294,7 +6187,7 @@ app.get('/estimates', async (c) => {
                 <div class="flex justify-end mb-6">
                   <div class="w-72 bg-gray-50 rounded-lg p-4">
                     <div class="flex justify-between py-2 border-b">
-                      <span class="text-gray-600">小計</span>
+                      <span id="subtotalLabel" class="text-gray-600">小計</span>
                       <span id="subtotalDisplay" class="font-bold">¥0</span>
                     </div>
                     <div id="taxSection" style="display: none;">
@@ -5307,7 +6200,7 @@ app.get('/estimates', async (c) => {
                       </div>
                     </div>
                     <div class="flex justify-between py-3 text-lg">
-                      <span class="font-bold text-gray-800">合計</span>
+                      <span id="totalLabel" class="font-bold text-gray-800">合計</span>
                       <span id="totalDisplay" class="font-bold text-blue-600">¥0</span>
                     </div>
                   </div>
@@ -5318,7 +6211,7 @@ app.get('/estimates', async (c) => {
                   <label class="block text-sm font-medium text-gray-700 mb-1">
                     <i class="fas fa-sticky-note mr-1 text-yellow-500"></i>備考
                   </label>
-                  <textarea name="notes" rows="3" placeholder="見積書に印刷される備考欄"
+                  <textarea name="notes" rows={3} placeholder="見積書に印刷される備考欄"
                     class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"></textarea>
                 </div>
               </form>
@@ -5354,6 +6247,7 @@ app.get('/estimates', async (c) => {
       </div>
 
       <script dangerouslySetInnerHTML={{__html: `
+        ${docHeaderTitleHelpers}
         // 状態管理
         var currentEstimateId = null;
         var originalEstimateStatus = null;  // 編集開始時のステータス（警告用）
@@ -5367,6 +6261,89 @@ app.get('/estimates', async (c) => {
         var selectedClient = null;
         var companySettings = {};  // 自社設定（消費税表示設定など）
         var showTax = false;  // 消費税を表示するかどうか
+        var currentHeaderMode = null;
+        var currentHeaderIconHtml = '';
+
+        function setFormHeaderMode(mode, iconHtml) {
+          currentHeaderMode = mode;
+          currentHeaderIconHtml = iconHtml || '';
+        }
+
+        function getCurrentClientLabel() {
+          if (selectedClient) return getClientDisplayLabel(selectedClient);
+          var selectedName = document.getElementById('selectedClientName');
+          return selectedName ? normalizeHeaderText(selectedName.textContent) : '';
+        }
+
+        function updateFormHeaderTitle() {
+          if (currentHeaderMode !== 'new' && currentHeaderMode !== 'edit') return;
+          var titleEl = document.getElementById('formTitle');
+          if (!titleEl) return;
+          var docNoInput = document.querySelector('[name="estimate_no"]');
+          var docNo = normalizeHeaderText(docNoInput ? docNoInput.value : '');
+          var clientLabel = getCurrentClientLabel();
+          var titleText = buildDocHeaderTitle({
+            docTypeLabel: '見積',
+            mode: currentHeaderMode,
+            clientLabel: clientLabel,
+            docNo: docNo
+          });
+          if (!titleText) return;
+          titleEl.innerHTML = (currentHeaderIconHtml || '') + titleText;
+        }
+
+        function updateEstimateSummaryLabels() {
+          var subtotalLabel = document.getElementById('subtotalLabel');
+          var totalLabel = document.getElementById('totalLabel');
+          if (!subtotalLabel || !totalLabel) return;
+          if (showTax) {
+            subtotalLabel.textContent = '小計（税抜）';
+            totalLabel.textContent = '合計（税込）';
+          } else {
+            subtotalLabel.textContent = '小計';
+            totalLabel.textContent = '合計';
+          }
+        }
+
+        function isShowTaxOnEstimate(companyInfo) {
+          var setting = companyInfo && companyInfo.show_tax_on_estimate_delivery;
+          return Number(setting != null ? setting : 1) === 1;
+        }
+
+        function getEstimateListDisplayTotal(estimate, companyInfo) {
+          var showTaxOn = isShowTaxOnEstimate(companyInfo);
+          var subtotal = estimate && estimate.subtotal != null
+            ? estimate.subtotal
+            : (estimate && estimate.total_amount != null && estimate.tax_amount != null
+              ? estimate.total_amount - estimate.tax_amount
+              : 0);
+          var total = estimate && estimate.total_amount != null
+            ? estimate.total_amount
+            : (estimate && estimate.tax_amount != null ? subtotal + estimate.tax_amount : subtotal);
+          return showTaxOn ? Number(total != null ? total : 0) : Number(subtotal != null ? subtotal : 0);
+        }
+
+        function getEstimateListTotalHeaderLabel(companyInfo) {
+          return isShowTaxOnEstimate(companyInfo) ? '合計金額' : '合計金額（税抜）';
+        }
+
+        function updateEstimateListTotalHeader() {
+          var tbody = document.getElementById('estimateTableBody');
+          if (!tbody) return;
+          var table = tbody.closest ? tbody.closest('table') : null;
+          if (!table) {
+            var parent = tbody.parentElement;
+            while (parent && parent.tagName !== 'TABLE') {
+              parent = parent.parentElement;
+            }
+            table = parent;
+          }
+          if (!table) return;
+          var headerCell = table.querySelector('thead th:nth-child(4)');
+          if (headerCell) {
+            headerCell.textContent = getEstimateListTotalHeaderLabel(companySettings);
+          }
+        }
         
         // 初期化
         async function init() {
@@ -5422,6 +6399,11 @@ app.get('/estimates', async (c) => {
         async function loadCompanySettings() {
           var res = await axios.get('/api/company');
           companySettings = res.data || {};
+          updateEstimateListTotalHeader();
+          updateEstimateSummaryLabels();
+          updateTaxDisplay(document.getElementById('clientSelect').value || null);
+          renderEstimateTable();
+          renderSidebarEstimates();
         }
         
         // 消費税表示を切り替える（見積）
@@ -5445,6 +6427,7 @@ app.get('/estimates', async (c) => {
             taxSection.style.display = showTax ? 'block' : 'none';
           }
           
+          updateEstimateSummaryLabels();
           // 合計を再計算
           calculateTotals();
         }
@@ -5500,11 +6483,9 @@ app.get('/estimates', async (c) => {
           // hidden selectに値をセット
           document.getElementById('clientSelect').value = clientId;
           
-          // 入力欄をクリア
-          document.getElementById('clientSearchInput').value = '';
-          
           // 選択表示を更新
           var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
           document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
           document.getElementById('selectedClientDisplay').classList.remove('hidden');
           
@@ -5528,6 +6509,7 @@ app.get('/estimates', async (c) => {
           document.getElementById('priceTypeHint').textContent = '';
           // 消費税表示をデフォルトに戻す
           updateTaxDisplay(null);
+          updateFormHeaderTitle();
           formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
         }
         
@@ -5547,15 +6529,23 @@ app.get('/estimates', async (c) => {
         }
         
         async function loadRecentEstimates() {
-          var res = await axios.get('/api/estimates/recent?limit=5');
+          var data = [];
+          try {
+            var res = await axios.get('/api/estimates/recent?limit=5');
+            data = res.data || [];
+          } catch (e) {
+            console.error(e);
+            data = [];
+          }
           var container = document.getElementById('recentEstimates');
-          if (res.data.length === 0) {
+          if (data.length === 0) {
             container.innerHTML = '<p class="text-xs text-gray-400 p-2">最近の編集はありません</p>';
             return;
           }
-          container.innerHTML = res.data.map(function(e) {
+          container.innerHTML = data.map(function(e) {
+            var displayNo = e.estimate_display_no || e.estimate_no || e.estimate_number || (e.id ? 'EST-' + String(e.id).padStart(6, '0') : '');
             return '<div class="p-2 hover:bg-gray-50 rounded cursor-pointer text-xs border-b estimate-item" data-id="' + e.id + '">' +
-              '<div class="font-medium text-gray-800">' + e.estimate_no + '</div>' +
+              '<div class="font-medium text-gray-800">' + displayNo + '</div>' +
               '<div class="text-gray-500">' + (e.client_name || '得意先未設定') + '</div>' +
               '</div>';
           }).join('');
@@ -5570,11 +6560,13 @@ app.get('/estimates', async (c) => {
           }
           tbody.innerHTML = estimates.map(function(e) {
             var statusSelect = getStatusSelect(e.id, e.status);
+            var displayNo = e.estimate_display_no || e.estimate_no || e.estimate_number || (e.id ? 'EST-' + String(e.id).padStart(6, '0') : '');
+            var displayTotal = getEstimateListDisplayTotal(e, companySettings);
             return '<tr class="hover:bg-gray-50 estimate-row" data-id="' + e.id + '">' +
-              '<td class="px-4 py-3 font-medium text-blue-600 cursor-pointer estimate-cell" data-id="' + e.id + '">' + e.estimate_no + '</td>' +
+              '<td class="px-4 py-3 font-medium text-blue-600 cursor-pointer estimate-cell" data-id="' + e.id + '">' + displayNo + '</td>' +
               '<td class="px-4 py-3 cursor-pointer estimate-cell" data-id="' + e.id + '">' + e.estimate_date + '</td>' +
               '<td class="px-4 py-3 cursor-pointer estimate-cell" data-id="' + e.id + '">' + (e.client_name || '-') + '</td>' +
-              '<td class="px-4 py-3 text-right font-bold cursor-pointer estimate-cell" data-id="' + e.id + '">¥' + (e.total_amount || 0).toLocaleString() + '</td>' +
+              '<td class="px-4 py-3 text-right font-bold cursor-pointer estimate-cell" data-id="' + e.id + '">¥' + displayTotal.toLocaleString() + '</td>' +
               '<td class="px-4 py-3 text-center">' + statusSelect + '</td>' +
               '<td class="px-4 py-3 text-center">' +
               '<button class="text-blue-600 hover:text-blue-800 edit-btn" data-id="' + e.id + '"><i class="fas fa-edit"></i></button>' +
@@ -5601,6 +6593,7 @@ app.get('/estimates', async (c) => {
               editEstimate(id);
             });
           });
+          updateEstimateListTotalHeader();
         }
         
         // ステータス選択プルダウン生成
@@ -5688,11 +6681,13 @@ app.get('/estimates', async (c) => {
           }
           container.innerHTML = estimates.slice(0, 20).map(function(e) {
             var isActive = currentEstimateId === e.id;
+            var displayNo = e.estimate_display_no || e.estimate_no || e.estimate_number || (e.id ? 'EST-' + String(e.id).padStart(6, '0') : '');
+            var displayTotal = getEstimateListDisplayTotal(e, companySettings);
             return '<div class="p-2 rounded cursor-pointer text-xs border-b estimate-item ' + (isActive ? 'bg-blue-100 border-blue-300' : 'hover:bg-gray-50') + '" data-id="' + e.id + '">' +
-              '<div class="font-medium ' + (isActive ? 'text-blue-800' : 'text-gray-800') + '">' + e.estimate_no + '</div>' +
+              '<div class="font-medium ' + (isActive ? 'text-blue-800' : 'text-gray-800') + '">' + displayNo + '</div>' +
               '<div class="text-gray-500 flex justify-between">' +
               '<span>' + (e.client_name || '得意先未設定') + '</span>' +
-              '<span>¥' + (e.total_amount || 0).toLocaleString() + '</span>' +
+              '<span>¥' + displayTotal.toLocaleString() + '</span>' +
               '</div></div>';
           }).join('');
         }
@@ -5900,6 +6895,7 @@ app.get('/estimates', async (c) => {
           } else {
             document.getElementById('totalDisplay').textContent = '¥' + subtotal.toLocaleString();
           }
+          updateEstimateSummaryLabels();
         }
         
         // 商品モーダル（見積データ入力）
@@ -5987,6 +6983,8 @@ app.get('/estimates', async (c) => {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
             document.getElementById('priceTypeHint').textContent = '';
+            updateTaxDisplay(null);
+            updateFormHeaderTitle();
             return;
           }
           
@@ -5994,6 +6992,7 @@ app.get('/estimates', async (c) => {
           if (!selectedClient) return;
           
           clientInfoDiv.classList.remove('hidden');
+          updateTaxDisplay(clientId);
           
           var wholesaleInfo = document.getElementById('clientWholesaleInfo');
           var closingInfo = document.getElementById('clientClosingInfo');
@@ -6010,6 +7009,7 @@ app.get('/estimates', async (c) => {
           }
           
           closingInfo.innerHTML = '<i class="fas fa-calendar text-blue-600 mr-1"></i>締日: ' + (selectedClient.closing_day || '未設定') + ' / 支払: ' + (selectedClient.payment_day || '未設定');
+          updateFormHeaderTitle();
         }
         
         // フォーム表示制御
@@ -6063,7 +7063,8 @@ app.get('/estimates', async (c) => {
             document.querySelector('[name="valid_until"]').value = validUntil.toISOString().split('T')[0];
           }
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-file-invoice mr-2 text-blue-600"></i>新規見積作成';
+          setFormHeaderMode('new', '<i class="fas fa-file-invoice mr-2 text-blue-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteEstimateBtn').classList.add('hidden');
           document.getElementById('duplicateEstimateBtn').classList.add('hidden');
           document.getElementById('pdfEstimateBtn').classList.add('hidden');
@@ -6077,6 +7078,7 @@ app.get('/estimates', async (c) => {
           document.getElementById('clientSelect').value = '';
           
           renderItemsTable();
+          updateTaxDisplay(null);
           calculateTotals();
           showDetailView();
           formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -6084,14 +7086,20 @@ app.get('/estimates', async (c) => {
         
         // 編集
         async function editEstimate(id) {
+          var params = new URLSearchParams(window.location.search || '');
+          if (params.get('action') === 'new' || window.location.pathname.endsWith('/new')) {
+            console.warn('editEstimate skipped on new action', { id: id, path: window.location.pathname, search: window.location.search });
+            return;
+          }
           if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
           
           var res = await axios.get('/api/estimates/' + id);
           var data = res.data;
+          var displayNo = (data && (data.estimate_no ?? data.estimate_display_no ?? data.estimate_number)) || '';
           
           currentEstimateId = id;
           originalEstimateStatus = data.status || 'draft';  // 元のステータスを保持
-          document.querySelector('[name="estimate_no"]').value = data.estimate_no;
+          document.querySelector('[name="estimate_no"]').value = displayNo;
           document.querySelector('[name="estimate_date"]').value = data.estimate_date;
           
           // 有効期限：空なら自社情報から計算して設定
@@ -6135,7 +7143,8 @@ app.get('/estimates', async (c) => {
           
           if (items.length === 0) addItemRow();
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-blue-600"></i>見積編集: ' + data.estimate_no;
+          setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-blue-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteEstimateBtn').classList.remove('hidden');
           document.getElementById('duplicateEstimateBtn').classList.remove('hidden');
           document.getElementById('pdfEstimateBtn').classList.remove('hidden');
@@ -6146,13 +7155,13 @@ app.get('/estimates', async (c) => {
             var client = clients.find(function(c) { return c.id == data.client_id; });
             if (client) {
               var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+              document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
               document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
               document.getElementById('selectedClientDisplay').classList.remove('hidden');
             }
           } else {
             document.getElementById('selectedClientDisplay').classList.add('hidden');
           }
-          document.getElementById('clientSearchInput').value = '';
           
           onClientChange();
           renderItemsTable();
@@ -6222,7 +7231,8 @@ app.get('/estimates', async (c) => {
             
             window.SmartBill.showSuccessDialog('見積を保存しました');
             
-            document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-blue-600"></i>見積編集: ' + data.estimate_no;
+            setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-blue-600"></i>');
+            updateFormHeaderTitle();
             document.getElementById('deleteEstimateBtn').classList.remove('hidden');
             document.getElementById('duplicateEstimateBtn').classList.remove('hidden');
             document.getElementById('pdfEstimateBtn').classList.remove('hidden');
@@ -6345,6 +7355,7 @@ app.get('/estimates', async (c) => {
           // ステータスを下書きに
           document.querySelector('[name="status"]').value = 'draft';
           
+          setFormHeaderMode('custom', '<i class="fas fa-copy mr-2 text-purple-600"></i>');
           document.getElementById('formTitle').innerHTML = '<i class="fas fa-copy mr-2 text-purple-600"></i>見積複製（新規）';
           document.getElementById('deleteEstimateBtn').classList.add('hidden');
           document.getElementById('duplicateEstimateBtn').classList.add('hidden');
@@ -6419,7 +7430,11 @@ app.get('/estimates', async (c) => {
           document.getElementById('autoNumberBtn').addEventListener('click', async function() {
             var res = await axios.get('/api/estimates/next-no');
             document.querySelector('[name="estimate_no"]').value = res.data.next_no;
+            updateFormHeaderTitle();
             formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          });
+          document.querySelector('[name="estimate_no"]').addEventListener('input', function() {
+            updateFormHeaderTitle();
           });
           document.getElementById('addItemBtn').addEventListener('click', function() { addItemRow(); });
           
@@ -6746,8 +7761,8 @@ app.get('/invoices', async (c) => {
                         <select name="client_id" id="clientSelect" class="hidden">
                           <option value="">得意先を選択...</option>
                         </select>
-                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-blue-50 rounded-lg flex items-center justify-between">
-                          <span id="selectedClientName" class="font-medium text-blue-800"></span>
+                        <div id="selectedClientDisplay" class="hidden mt-2 p-2 bg-gray-50 rounded-lg flex items-center justify-between">
+                          <span id="selectedClientName" class="font-medium text-gray-700"></span>
                           <button type="button" id="clearClientBtn" class="text-blue-600 hover:text-blue-800 text-sm">
                             <i class="fas fa-times"></i> クリア
                           </button>
@@ -6863,7 +7878,7 @@ app.get('/invoices', async (c) => {
                   <label class="block text-sm font-medium text-gray-700 mb-1">
                     <i class="fas fa-sticky-note mr-1 text-yellow-500"></i>備考
                   </label>
-                  <textarea name="notes" rows="3" placeholder="請求書に印刷される備考欄"
+                  <textarea name="notes" rows={3} placeholder="請求書に印刷される備考欄"
                     class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"></textarea>
                 </div>
               </form>
@@ -6931,7 +7946,7 @@ app.get('/invoices', async (c) => {
                     </tr>
                   </thead>
                   <tbody id="batchClientList" class="divide-y">
-                    <tr><td colspan="7" class="px-3 py-8 text-center text-gray-500">締め月を選択して「検索」をクリックしてください</td></tr>
+                    <tr><td colSpan={7} class="px-3 py-8 text-center text-gray-500">締め月を選択して「検索」をクリックしてください</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -7000,6 +8015,7 @@ app.get('/invoices', async (c) => {
       </div>
 
       <script dangerouslySetInnerHTML={{__html: `
+        ${docHeaderTitleHelpers}
         // 状態管理
         var currentInvoiceId = null;
         var originalInvoiceStatus = null;
@@ -7011,6 +8027,36 @@ app.get('/invoices', async (c) => {
         var bankAccounts = [];
         var selectedDeliveryIds = [];
         var lastSelectedClientId = localStorage.getItem('lastSelectedClientId');
+        var currentHeaderMode = null;
+        var currentHeaderIconHtml = '';
+
+        function setFormHeaderMode(mode, iconHtml) {
+          currentHeaderMode = mode;
+          currentHeaderIconHtml = iconHtml || '';
+        }
+
+        function getCurrentClientLabel() {
+          if (selectedClient) return getClientDisplayLabel(selectedClient);
+          var selectedName = document.getElementById('selectedClientName');
+          return selectedName ? normalizeHeaderText(selectedName.textContent) : '';
+        }
+
+        function updateFormHeaderTitle() {
+          if (currentHeaderMode !== 'new' && currentHeaderMode !== 'edit') return;
+          var titleEl = document.getElementById('formTitle');
+          if (!titleEl) return;
+          var docNoInput = document.querySelector('[name="invoice_no"]');
+          var docNo = normalizeHeaderText(docNoInput ? docNoInput.value : '');
+          var clientLabel = getCurrentClientLabel();
+          var titleText = buildDocHeaderTitle({
+            docTypeLabel: '請求書',
+            mode: currentHeaderMode,
+            clientLabel: clientLabel,
+            docNo: docNo
+          });
+          if (!titleText) return;
+          titleEl.innerHTML = (currentHeaderIconHtml || '') + titleText;
+        }
         
         // 初期化
         async function init() {
@@ -7067,15 +8113,23 @@ app.get('/invoices', async (c) => {
         }
         
         async function loadRecentInvoices() {
-          var res = await axios.get('/api/invoices/recent?limit=5');
+          var data = [];
+          try {
+            var res = await axios.get('/api/invoices/recent?limit=5');
+            data = res.data || [];
+          } catch (e) {
+            console.error(e);
+            data = [];
+          }
           var container = document.getElementById('recentInvoices');
-          if (res.data.length === 0) {
+          if (data.length === 0) {
             container.innerHTML = '<p class="text-xs text-gray-400 p-2">最近の編集はありません</p>';
             return;
           }
-          container.innerHTML = res.data.map(function(inv) {
+          container.innerHTML = data.map(function(inv) {
+            var displayNo = inv.invoice_display_no || inv.invoice_no || inv.invoice_number || (inv.id ? 'INV-' + String(inv.id).padStart(6, '0') : '');
             return '<div class="p-2 hover:bg-gray-50 rounded cursor-pointer text-xs border-b invoice-item" data-id="' + inv.id + '">' +
-              '<div class="font-medium text-gray-800">' + inv.invoice_no + '</div>' +
+              '<div class="font-medium text-gray-800">' + displayNo + '</div>' +
               '<div class="text-gray-500">' + (inv.client_name || '得意先未設定') + '</div>' +
               '</div>';
           }).join('');
@@ -7159,9 +8213,8 @@ app.get('/invoices', async (c) => {
           if (!client) return;
           
           document.getElementById('clientSelect').value = clientId;
-          document.getElementById('clientSearchInput').value = '';
-          
           var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
           document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
           document.getElementById('selectedClientDisplay').classList.remove('hidden');
           
@@ -7181,6 +8234,7 @@ app.get('/invoices', async (c) => {
           document.getElementById('clientInfo').classList.add('hidden');
           document.getElementById('deliveriesSection').classList.add('hidden');
           formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          updateFormHeaderTitle();
         }
         
         // 得意先選択時
@@ -7193,6 +8247,7 @@ app.get('/invoices', async (c) => {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
             deliveriesSection.classList.add('hidden');
+            updateFormHeaderTitle();
             return;
           }
           
@@ -7201,6 +8256,8 @@ app.get('/invoices', async (c) => {
           
           clientInfoDiv.classList.remove('hidden');
           deliveriesSection.classList.remove('hidden');
+          var codeDisplay = selectedClient.client_code ? ' (' + selectedClient.client_code + ')' : '';
+          document.getElementById('clientSearchInput').value = selectedClient.client_name + codeDisplay;
           
           var closingInfo = document.getElementById('clientClosingInfo');
           var paymentInfo = document.getElementById('clientPaymentInfo');
@@ -7238,6 +8295,7 @@ app.get('/invoices', async (c) => {
             }
             document.querySelector('[name="invoice_date"]').value = invoiceDate.toISOString().split('T')[0];
           }
+          updateFormHeaderTitle();
         }
         
         // テーブル描画
@@ -7252,8 +8310,9 @@ app.get('/invoices', async (c) => {
             var period = inv.billing_period_start && inv.billing_period_end 
               ? inv.billing_period_start.substring(5) + '〜' + inv.billing_period_end.substring(5)
               : '-';
+            var displayNo = inv.invoice_display_no || inv.invoice_no || inv.invoice_number || (inv.id ? 'INV-' + String(inv.id).padStart(6, '0') : '');
             return '<tr class="hover:bg-gray-50 invoice-row" data-id="' + inv.id + '">' +
-              '<td class="px-4 py-3 font-medium text-indigo-600 cursor-pointer invoice-cell" data-id="' + inv.id + '">' + inv.invoice_no + '</td>' +
+              '<td class="px-4 py-3 font-medium text-indigo-600 cursor-pointer invoice-cell" data-id="' + inv.id + '">' + displayNo + '</td>' +
               '<td class="px-4 py-3 cursor-pointer invoice-cell" data-id="' + inv.id + '">' + inv.invoice_date + '</td>' +
               '<td class="px-4 py-3 cursor-pointer invoice-cell" data-id="' + inv.id + '">' + (inv.client_name || '-') + '</td>' +
               '<td class="px-4 py-3 cursor-pointer invoice-cell text-xs" data-id="' + inv.id + '">' + period + '</td>' +
@@ -7339,8 +8398,9 @@ app.get('/invoices', async (c) => {
           }
           container.innerHTML = invoices.slice(0, 20).map(function(inv) {
             var isActive = currentInvoiceId === inv.id;
+            var displayNo = inv.invoice_display_no || inv.invoice_no || inv.invoice_number || (inv.id ? 'INV-' + String(inv.id).padStart(6, '0') : '');
             return '<div class="p-2 rounded cursor-pointer text-xs border-b invoice-item ' + (isActive ? 'bg-indigo-100 border-indigo-300' : 'hover:bg-gray-50') + '" data-id="' + inv.id + '">' +
-              '<div class="font-medium ' + (isActive ? 'text-indigo-800' : 'text-gray-800') + '">' + inv.invoice_no + '</div>' +
+              '<div class="font-medium ' + (isActive ? 'text-indigo-800' : 'text-gray-800') + '">' + displayNo + '</div>' +
               '<div class="text-gray-500 flex justify-between">' +
               '<span>' + (inv.client_name || '得意先未設定') + '</span>' +
               '<span>¥' + (inv.total_amount || 0).toLocaleString() + '</span>' +
@@ -7518,7 +8578,8 @@ app.get('/invoices', async (c) => {
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="invoice_date"]').value = today;
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-file-invoice-dollar mr-2 text-indigo-600"></i>新規請求書作成';
+          setFormHeaderMode('new', '<i class="fas fa-file-invoice-dollar mr-2 text-indigo-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteInvoiceBtn').classList.add('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.add('hidden');
           document.getElementById('pdfInvoiceBtn').classList.add('hidden');
@@ -7545,9 +8606,15 @@ app.get('/invoices', async (c) => {
         // 編集
         async function editInvoice(id) {
           if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
-          
-          var res = await axios.get('/api/invoices/' + id);
-          var data = res.data;
+          var data = null;
+          try {
+            var res = await axios.get('/api/invoices/' + id);
+            data = res.data || null;
+          } catch (e) {
+            console.error(e);
+            return;
+          }
+          if (!data) return;
           
           currentInvoiceId = id;
           originalInvoiceStatus = data.status || 'draft';
@@ -7575,7 +8642,8 @@ app.get('/invoices', async (c) => {
           
           if (items.length === 0) addItemRow();
           
-          document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-indigo-600"></i>請求書編集: ' + data.invoice_no;
+          setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-indigo-600"></i>');
+          updateFormHeaderTitle();
           document.getElementById('deleteInvoiceBtn').classList.remove('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.remove('hidden');
           document.getElementById('pdfInvoiceBtn').classList.remove('hidden');
@@ -7586,13 +8654,13 @@ app.get('/invoices', async (c) => {
             var client = clients.find(function(c) { return c.id == data.client_id; });
             if (client) {
               var codeDisplay = client.client_code ? ' (' + client.client_code + ')' : '';
+              document.getElementById('clientSearchInput').value = client.client_name + codeDisplay;
               document.getElementById('selectedClientName').textContent = client.client_name + codeDisplay;
               document.getElementById('selectedClientDisplay').classList.remove('hidden');
             }
           } else {
             document.getElementById('selectedClientDisplay').classList.add('hidden');
           }
-          document.getElementById('clientSearchInput').value = '';
           
           // 振込先
           if (data.bank_info) {
@@ -7671,7 +8739,8 @@ app.get('/invoices', async (c) => {
             
             window.SmartBill.showSuccessDialog('請求書を保存しました');
             
-            document.getElementById('formTitle').innerHTML = '<i class="fas fa-edit mr-2 text-indigo-600"></i>請求書編集: ' + data.invoice_no;
+            setFormHeaderMode('edit', '<i class="fas fa-edit mr-2 text-indigo-600"></i>');
+            updateFormHeaderTitle();
             document.getElementById('deleteInvoiceBtn').classList.remove('hidden');
             document.getElementById('duplicateInvoiceBtn').classList.remove('hidden');
             document.getElementById('pdfInvoiceBtn').classList.remove('hidden');
@@ -7693,6 +8762,10 @@ app.get('/invoices', async (c) => {
             // 請求書データを取得
             var res = await axios.get('/api/invoices/' + currentInvoiceId);
             var invoiceData = res.data;
+            if (!invoiceData) {
+              console.error('invoice data not found');
+              return;
+            }
             
             // 自社情報を取得
             var companyRes = await axios.get('/api/company');
@@ -7848,6 +8921,7 @@ app.get('/invoices', async (c) => {
           
           document.querySelector('[name="status"]').value = 'draft';
           
+          setFormHeaderMode('custom', '<i class="fas fa-copy mr-2 text-purple-600"></i>');
           document.getElementById('formTitle').innerHTML = '<i class="fas fa-copy mr-2 text-purple-600"></i>請求書複製（新規）';
           document.getElementById('deleteInvoiceBtn').classList.add('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.add('hidden');
@@ -8228,7 +9302,11 @@ app.get('/invoices', async (c) => {
           document.getElementById('autoNumberBtn').addEventListener('click', async function() {
             var res = await axios.get('/api/invoices/next-no');
             document.querySelector('[name="invoice_no"]').value = res.data.next_no;
+            updateFormHeaderTitle();
             formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          });
+          document.querySelector('[name="invoice_no"]').addEventListener('input', function() {
+            updateFormHeaderTitle();
           });
           document.getElementById('addItemBtn').addEventListener('click', function() { addItemRow(); });
           
