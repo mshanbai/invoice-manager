@@ -1186,8 +1186,8 @@ api.get('/deliveries/next-no', async (c) => {
   }
 
   const { data, error } = await supabase.rpc('next_document_no', {
-    p_doc_type: 'delivery',
-    p_doc_date: docDate
+    doc_type: 'delivery',
+    doc_date: docDate
   })
 
   if (error) {
@@ -1550,8 +1550,8 @@ api.get('/estimates/next-no', async (c) => {
   }
 
   const { data, error } = await supabase.rpc('next_document_no', {
-    p_doc_type: 'estimate',
-    p_doc_date: docDate
+    doc_type: 'estimate',
+    doc_date: docDate
   })
 
   if (error) {
@@ -2109,8 +2109,8 @@ api.get('/invoices/next-no', async (c) => {
   }
 
   const { data, error } = await supabase.rpc('next_document_no', {
-    p_doc_type: 'invoice',
-    p_doc_date: docDate
+    doc_type: 'invoice',
+    doc_date: docDate
   })
 
   if (error) {
