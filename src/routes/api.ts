@@ -1,5 +1,12 @@
 import { Hono } from 'hono'
 import { supabase } from '../lib/supabaseClient'
+import { demoFabricDict } from '../features/fabric-calculator/data/demoFabricDict'
+import { calculateFabricUsage } from '../features/fabric-calculator/utils/calculation'
+import type {
+  ChairPart,
+  CutDirection,
+  FabricSpec,
+} from '../features/fabric-calculator/types'
 
 const api = new Hono()
 const isDev = process.env.NODE_ENV !== 'production'
@@ -1146,7 +1153,7 @@ api.get('/deliveries/recent', async (c) => {
   const rows = (data || []).map((row: any) => ({
     ...row,
     client_name: row.clients?.client_name || null,
-    delivery_display_no: row.delivery_no || (row.id ? `DEL-${String(row.id).padStart(6, '0')}` : null),
+    delivery_no: row.delivery_no || null,
     delivery_number: row.delivery_no || null
   }))
   return c.json(rows)
@@ -1260,7 +1267,7 @@ api.get('/deliveries', async (c) => {
   const rows = (data || []).map((row: any) => ({
     ...row,
     client_name: row.clients?.client_name || null,
-    delivery_display_no: row.delivery_no || (row.id ? `DEL-${String(row.id).padStart(6, '0')}` : null),
+    delivery_no: row.delivery_no || null,
     delivery_number: row.delivery_no || null
   }))
   return c.json(rows)
@@ -1287,6 +1294,8 @@ api.get('/deliveries/:id', async (c) => {
 
   return c.json({
     ...(delivery || {}),
+    delivery_no: delivery?.delivery_no || null,
+    delivery_number: delivery?.delivery_no || null,
     client_name: delivery?.clients?.client_name || null,
     items: items || []
   })
@@ -1294,43 +1303,33 @@ api.get('/deliveries/:id', async (c) => {
 
 // 納品書番号生成
 api.get('/deliveries/next-number', async (c) => {
-  const clientId = c.req.query('client_id')
   const date = c.req.query('date') || new Date().toISOString().split('T')[0]
+  const docDate = date && date.length >= 10 ? date : new Date().toISOString().split('T')[0]
   
-  const { data: client, error: clientError } = await supabase
-    .from('clients')
-    .select('client_code')
-    .eq('id', clientId)
-    .eq('user_id', DEMO_USER_ID)
-    .maybeSingle()
+  const { data, error } = await supabase.rpc('next_document_no', {
+    doc_type: 'delivery',
+    doc_date: docDate
+  })
 
-  if (clientError) return handleSupabaseError(c, clientError, 'clients select for deliveries next-number')
-  
-  const clientCode = client?.client_code || '000'
-  const year = date.substring(2, 4)
-  const monthDay = date.substring(5, 7) + date.substring(8, 10)
-  
-  // 同日同取引先の既存納品書をカウント
-  const { count: existingCount, error: existingError } = await supabase
-    .from('deliveries')
-    .select('id', { count: 'exact', head: true })
-    .eq('delivery_date', date)
-    .eq('client_id', clientId)
-    .eq('user_id', DEMO_USER_ID)
-
-  if (existingError) return handleSupabaseError(c, existingError, 'deliveries select count')
-  
-  const seq = (existingCount || 0) + 1
-  const deliveryNo = seq > 1 
-    ? `DS${year}-${clientCode}-${monthDay}-${String(seq).padStart(2, '0')}`
-    : `DS${year}-${clientCode}-${monthDay}`
-  
-  return c.json({ delivery_no: deliveryNo })
+  if (error) return handleSupabaseError(c, error, 'deliveries rpc next-number')
+  return c.json({ delivery_no: data })
 })
 
 api.post('/deliveries', async (c) => {
   const data = await c.req.json()
   
+  const rawDeliveryNo = typeof data.delivery_no === 'string' ? data.delivery_no.trim() : ''
+  let deliveryNo = rawDeliveryNo
+  if (!deliveryNo) {
+    const docDate = data.delivery_date || new Date().toISOString().split('T')[0]
+    const { data: nextNo, error: nextNoError } = await supabase.rpc('next_document_no', {
+      doc_type: 'delivery',
+      doc_date: docDate
+    })
+    if (nextNoError) return handleSupabaseError(c, nextNoError, 'deliveries rpc next-no')
+    deliveryNo = nextNo
+  }
+
   // 小計・税・合計計算（税率別）
   let subtotal = 0
   let totalTax = 0
@@ -1345,7 +1344,7 @@ api.post('/deliveries', async (c) => {
     .from('deliveries')
     .insert({
       user_id: DEMO_USER_ID,
-      delivery_no: data.delivery_no,
+      delivery_no: deliveryNo,
       delivery_date: data.delivery_date,
       client_id: data.client_id,
       subject: data.subject || '',
@@ -1383,7 +1382,12 @@ api.post('/deliveries', async (c) => {
     if (itemError) return handleSupabaseError(c, itemError, 'delivery_items insert')
   }
   
-  return c.json({ success: true, id: deliveryId })
+  return c.json({
+    success: true,
+    id: deliveryId,
+    delivery_no: deliveryNo,
+    delivery_number: deliveryNo
+  })
 })
 
 api.put('/deliveries/:id', async (c) => {
@@ -1687,6 +1691,18 @@ api.get('/estimates/latest-price', async (c) => {
 api.post('/estimates', async (c) => {
   const data = await c.req.json()
   
+  const rawEstimateNo = typeof data.estimate_no === 'string' ? data.estimate_no.trim() : ''
+  let estimateNo = rawEstimateNo
+  if (!estimateNo) {
+    const docDate = data.estimate_date || new Date().toISOString().split('T')[0]
+    const { data: nextNo, error: nextNoError } = await supabase.rpc('next_document_no', {
+      doc_type: 'estimate',
+      doc_date: docDate
+    })
+    if (nextNoError) return handleSupabaseError(c, nextNoError, 'estimates rpc next-no')
+    estimateNo = nextNo
+  }
+
   // 小計・税率別消費税・合計計算
   let subtotal = 0
   const taxByRate: { [key: number]: number } = {}
@@ -1706,7 +1722,7 @@ api.post('/estimates', async (c) => {
     .from('estimates')
     .insert({
       user_id: DEMO_USER_ID,
-      estimate_no: data.estimate_no,
+      estimate_no: estimateNo,
       estimate_date: data.estimate_date,
       client_id: data.client_id,
       valid_until: data.valid_until || null,
@@ -1751,7 +1767,7 @@ api.post('/estimates', async (c) => {
     if (itemError) return handleSupabaseError(c, itemError, 'estimate_items insert')
   }
   
-  return c.json({ success: true, id: estimateId })
+  return c.json({ success: true, id: estimateId, estimate_no: estimateNo })
 })
 
 api.put('/estimates/:id', async (c) => {
@@ -2538,6 +2554,18 @@ api.get('/invoices/:id', async (c) => {
 api.post('/invoices', async (c) => {
   const data = await c.req.json()
   
+  const rawInvoiceNo = typeof data.invoice_no === 'string' ? data.invoice_no.trim() : ''
+  let invoiceNo = rawInvoiceNo
+  if (!invoiceNo) {
+    const docDate = data.invoice_date || new Date().toISOString().split('T')[0]
+    const { data: nextNo, error: nextNoError } = await supabase.rpc('next_document_no', {
+      doc_type: 'invoice',
+      doc_date: docDate
+    })
+    if (nextNoError) return handleSupabaseError(c, nextNoError, 'invoices rpc next-no')
+    invoiceNo = nextNo
+  }
+
   // 小計・税・合計計算
   let subtotal = 0
   let totalTax = 0
@@ -2552,7 +2580,7 @@ api.post('/invoices', async (c) => {
     .from('invoices')
     .insert({
       user_id: DEMO_USER_ID,
-      invoice_no: data.invoice_no,
+      invoice_no: invoiceNo,
       invoice_date: data.invoice_date,
       client_id: data.client_id,
       billing_period_start: data.billing_period_start || null,
@@ -2605,7 +2633,7 @@ api.post('/invoices', async (c) => {
     }
   }
   
-  return c.json({ success: true, id: invoiceId })
+  return c.json({ success: true, id: invoiceId, invoice_no: invoiceNo })
 })
 
 // 請求書更新
@@ -2719,6 +2747,51 @@ api.delete('/invoices/:id', async (c) => {
 
   if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices delete')
   return c.json({ success: true })
+})
+
+// =====================================
+// 椅子張り替え用・生地必要量 自動計算ツール
+// =====================================
+api.get('/fabric-calculator/fabric-spec', (c) => {
+  const rawCode = c.req.query('productCode') || ''
+  const productCode = rawCode.trim().toUpperCase()
+  if (!productCode) {
+    return c.json({ found: false, message: '品番が未入力です' })
+  }
+  const spec = demoFabricDict[productCode]
+  if (!spec) {
+    return c.json({ found: false, message: '該当なし（手入力をしてください）' })
+  }
+  return c.json({ found: true, spec })
+})
+
+api.post('/fabric-calculator/calculate', async (c) => {
+  const payload = await c.req.json()
+  const rawDirection = payload?.cutDirection
+  const cutDirection: CutDirection =
+    rawDirection === 'railroading' ? 'railroading' : 'regular'
+
+  const fabricSpec: FabricSpec = {
+    productCode: String(payload?.fabricSpec?.productCode || '').trim(),
+    width: parseNonNegativeNumber(payload?.fabricSpec?.width) || 0,
+    repeatVertical: parseNonNegativeNumber(payload?.fabricSpec?.repeatVertical) || 0,
+    repeatHorizontal: parseNonNegativeNumber(payload?.fabricSpec?.repeatHorizontal) || 0,
+    pricePerMeter: parseNonNegativeNumber(payload?.fabricSpec?.pricePerMeter) || 0,
+  }
+
+  const parts: ChairPart[] = Array.isArray(payload?.parts)
+    ? payload.parts.map((part: any, index: number) => ({
+        id: String(part?.id || `part-${index + 1}`),
+        name: String(part?.name || 'パーツ'),
+        count: parseNonNegativeNumber(part?.count) || 0,
+        width: parseNonNegativeNumber(part?.width) || 0,
+        depth: parseNonNegativeNumber(part?.depth) || 0,
+        allowRailroading: true,
+      }))
+    : []
+
+  const result = calculateFabricUsage(parts, fabricSpec, cutDirection)
+  return c.json({ result })
 })
 
 export default api

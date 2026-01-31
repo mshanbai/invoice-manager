@@ -9,6 +9,7 @@ interface LayoutProps {
 
 const menuItems = [
   { path: '/', label: 'ダッシュボード', icon: 'fa-chart-line' },
+  { path: '/fabric-calculator', label: '椅子生地計算', icon: 'fa-couch' },
   { path: '/estimates', label: '見積データ入力', icon: 'fa-file-invoice' },
   { path: '/deliveries', label: '納品データ入力', icon: 'fa-truck' },
   { path: '/invoices', label: '請求書作成', icon: 'fa-file-invoice-dollar' },

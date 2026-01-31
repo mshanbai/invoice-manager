@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { Layout } from './components/Layout'
+import { FabricCalculatorPage } from './features/fabric-calculator'
 import api from './routes/api'
 
 const app = new Hono()
@@ -281,6 +282,20 @@ app.get('/', async (c) => {
         }
         loadDashboard();
       `}} />
+    </Layout>
+  )
+})
+
+// =====================================
+// 椅子張り替え用・生地必要量 自動計算ツール
+// =====================================
+app.get('/fabric-calculator', async (c) => {
+  return c.html(
+    <Layout
+      title="椅子張り替え用・生地必要量 自動計算"
+      currentPath="/fabric-calculator"
+    >
+      <FabricCalculatorPage />
     </Layout>
   )
 })
@@ -4410,10 +4425,8 @@ app.get('/deliveries', async (c) => {
                     <div class="flex gap-1">
                       <input type="text" name="delivery_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
-                      <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
-                        <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
-                      </button>
                     </div>
+                    <p class="text-xs text-gray-500 mt-1">未入力のまま保存すると自動採番されます。</p>
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">納品日 *</label>
@@ -4716,12 +4729,18 @@ app.get('/deliveries', async (c) => {
             loadCompanySettings()
           ]);
           
-          // 今日の日付をデフォルト設定
-          var today = new Date().toISOString().split('T')[0];
-          document.querySelector('[name="delivery_date"]').value = today;
-          
-          // 空の明細行を1つ追加
-          addItemRow();
+          var params = new URLSearchParams(window.location.search || '');
+          var isNewAction = params.get('action') === 'new' || window.location.pathname.endsWith('/new');
+          if (isNewAction) {
+            await newDelivery();
+          } else {
+            // 今日の日付をデフォルト設定
+            var today = new Date().toISOString().split('T')[0];
+            document.querySelector('[name="delivery_date"]').value = today;
+            
+            // 空の明細行を1つ追加
+            addItemRow();
+          }
           
           setupEventListeners();
         }
@@ -4853,6 +4872,7 @@ app.get('/deliveries', async (c) => {
           document.getElementById('clientSelect').value = '';
           document.getElementById('clientSearchInput').value = '';
           document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('selectedClientName').textContent = '';
           selectedClient = null;
           document.getElementById('clientInfo').classList.add('hidden');
           // 消費税表示をデフォルトに戻す
@@ -4884,7 +4904,7 @@ app.get('/deliveries', async (c) => {
             return;
           }
           container.innerHTML = res.data.map(function(d) {
-            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
+            var displayNo = d.delivery_no || '';
             return '<div class="p-2 hover:bg-gray-50 rounded cursor-pointer text-xs border-b delivery-item" data-id="' + d.id + '">' +
               '<div class="font-medium text-gray-800">' + displayNo + '</div>' +
               '<div class="text-gray-500">' + (d.client_name || '得意先未設定') + '</div>' +
@@ -4901,7 +4921,7 @@ app.get('/deliveries', async (c) => {
           }
           tbody.innerHTML = deliveries.map(function(d) {
             var statusSelect = getStatusSelect(d.id, d.status);
-            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
+            var displayNo = d.delivery_no || '';
             var displayTotal = getDeliveryListDisplayTotal(d, companySettings);
             return '<tr class="hover:bg-gray-50 delivery-row" data-id="' + d.id + '">' +
               '<td class="px-4 py-3 font-medium text-green-600 cursor-pointer delivery-cell" data-id="' + d.id + '">' + displayNo + '</td>' +
@@ -5012,7 +5032,7 @@ app.get('/deliveries', async (c) => {
           }
           container.innerHTML = deliveries.slice(0, 20).map(function(d) {
             var isActive = currentDeliveryId === d.id;
-            var displayNo = d.delivery_display_no || d.delivery_no || (d.id ? 'DEL-' + String(d.id).padStart(6, '0') : '');
+            var displayNo = d.delivery_no || '';
             var displayTotal = getDeliveryListDisplayTotal(d, companySettings);
             return '<div class="p-2 rounded cursor-pointer text-xs border-b delivery-item ' + (isActive ? 'bg-green-100 border-green-300' : 'hover:bg-gray-50') + '" data-id="' + d.id + '">' +
               '<div class="font-medium ' + (isActive ? 'text-green-800' : 'text-gray-800') + '">' + displayNo + '</div>' +
@@ -5322,9 +5342,8 @@ app.get('/deliveries', async (c) => {
             currentDeliveryId = null;
             document.getElementById('deliveryForm').reset();
             
-            // 納品番号を自動採番
-            var noRes = await axios.get('/api/deliveries/next-no');
-            document.querySelector('[name="delivery_no"]').value = noRes.data.next_no;
+            // 新規作成時は番号を空にする（保存時に採番）
+            document.querySelector('[name="delivery_no"]').value = '';
             
             // 今日の日付
             var today = new Date().toISOString().split('T')[0];
@@ -5390,6 +5409,8 @@ app.get('/deliveries', async (c) => {
           if (!clientId) {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
+            document.getElementById('selectedClientDisplay').classList.add('hidden');
+            document.getElementById('selectedClientName').textContent = '';
             updateTaxDisplay(null);
             updateFormHeaderTitle();
             return;
@@ -5423,39 +5444,42 @@ app.get('/deliveries', async (c) => {
           document.querySelector('main').scrollTo(0, 0);
         }
         
-        // 新規作成
-        async function newDelivery() {
-          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
-          
+        function resetDeliveryFormState() {
           currentDeliveryId = null;
+          originalDeliveryStatus = null;
+          selectedClient = null;
           document.getElementById('deliveryForm').reset();
           items = [];
           addItemRow();
           
-          // 自動採番
-          var res = await axios.get('/api/deliveries/next-no');
-          document.querySelector('[name="delivery_no"]').value = res.data.next_no;
+          document.querySelector('[name="delivery_no"]').value = '';
+          document.getElementById('clientSelect').value = '';
+          document.getElementById('clientSearchInput').value = '';
+          document.getElementById('selectedClientName').textContent = '';
+          document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('clientInfo').classList.add('hidden');
+          
+          updateTaxDisplay(null);
+          updateFormHeaderTitle();
+        }
+        
+        // 新規作成
+        async function newDelivery() {
+          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
+          
+          setFormHeaderMode('new', '<i class="fas fa-truck mr-2 text-green-600"></i>');
+          resetDeliveryFormState();
           
           // 今日の日付
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="delivery_date"]').value = today;
           
-          setFormHeaderMode('new', '<i class="fas fa-truck mr-2 text-green-600"></i>');
-          updateFormHeaderTitle();
           document.getElementById('deleteDeliveryBtn').classList.add('hidden');
           document.getElementById('duplicateDeliveryBtn').classList.add('hidden');
           document.getElementById('pdfDeliveryBtn').classList.add('hidden');
           document.getElementById('newDeliveryBtnDetail').classList.add('hidden');
           
-          originalDeliveryStatus = null;
-          selectedClient = null;
-          document.getElementById('clientInfo').classList.add('hidden');
-          document.getElementById('selectedClientDisplay').classList.add('hidden');
-          document.getElementById('clientSearchInput').value = '';
-          document.getElementById('clientSelect').value = '';
-          
           renderItemsTable();
-          updateTaxDisplay(null);
           calculateTotals();
           showDetailView();
           formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -5557,6 +5581,10 @@ app.get('/deliveries', async (c) => {
             } else {
               var res = await axios.post('/api/deliveries', data);
               currentDeliveryId = res.data.id;
+              if (res.data && res.data.delivery_no) {
+                document.querySelector('[name="delivery_no"]').value = res.data.delivery_no;
+                updateFormHeaderTitle();
+              }
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -5675,8 +5703,7 @@ app.get('/deliveries', async (c) => {
           
           currentDeliveryId = null;
           
-          var res = await axios.get('/api/deliveries/next-no');
-          document.querySelector('[name="delivery_no"]').value = res.data.next_no;
+          document.querySelector('[name="delivery_no"]').value = '';
           
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="delivery_date"]').value = today;
@@ -5757,12 +5784,6 @@ app.get('/deliveries', async (c) => {
           document.getElementById('deleteDeliveryBtn').addEventListener('click', deleteDelivery);
           document.getElementById('duplicateDeliveryBtn').addEventListener('click', duplicateDelivery);
           document.getElementById('pdfDeliveryBtn').addEventListener('click', exportDeliveryPDF);
-          document.getElementById('autoNumberBtn').addEventListener('click', async function() {
-            var res = await axios.get('/api/deliveries/next-no');
-            document.querySelector('[name="delivery_no"]').value = res.data.next_no;
-            updateFormHeaderTitle();
-            formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
-          });
           document.querySelector('[name="delivery_no"]').addEventListener('input', function() {
             updateFormHeaderTitle();
           });
@@ -6051,10 +6072,8 @@ app.get('/estimates', async (c) => {
                     <div class="flex gap-1">
                       <input type="text" name="estimate_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
-                      <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
-                        <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
-                      </button>
                     </div>
+                    <p class="text-xs text-gray-500 mt-1">未入力のまま保存すると自動採番されます。</p>
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">見積日 *</label>
@@ -6356,17 +6375,23 @@ app.get('/estimates', async (c) => {
             loadCompanySettings()
           ]);
           
-          // 今日の日付をデフォルト設定
-          var today = new Date().toISOString().split('T')[0];
-          document.querySelector('[name="estimate_date"]').value = today;
-          
-          // 有効期限を30日後に設定
-          var validUntil = new Date();
-          validUntil.setDate(validUntil.getDate() + 30);
-          document.querySelector('[name="valid_until"]').value = validUntil.toISOString().split('T')[0];
-          
-          // 空の明細行を1つ追加
-          addItemRow();
+          var params = new URLSearchParams(window.location.search || '');
+          var isNewAction = params.get('action') === 'new' || window.location.pathname.endsWith('/new');
+          if (isNewAction) {
+            await newEstimate();
+          } else {
+            // 今日の日付をデフォルト設定
+            var today = new Date().toISOString().split('T')[0];
+            document.querySelector('[name="estimate_date"]').value = today;
+            
+            // 有効期限を30日後に設定
+            var validUntil = new Date();
+            validUntil.setDate(validUntil.getDate() + 30);
+            document.querySelector('[name="valid_until"]').value = validUntil.toISOString().split('T')[0];
+            
+            // 空の明細行を1つ追加
+            addItemRow();
+          }
           
           setupEventListeners();
         }
@@ -6504,6 +6529,7 @@ app.get('/estimates', async (c) => {
           document.getElementById('clientSelect').value = '';
           document.getElementById('clientSearchInput').value = '';
           document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('selectedClientName').textContent = '';
           selectedClient = null;
           document.getElementById('clientInfo').classList.add('hidden');
           document.getElementById('priceTypeHint').textContent = '';
@@ -6982,6 +7008,8 @@ app.get('/estimates', async (c) => {
           if (!clientId) {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
+            document.getElementById('selectedClientDisplay').classList.add('hidden');
+            document.getElementById('selectedClientName').textContent = '';
             document.getElementById('priceTypeHint').textContent = '';
             updateTaxDisplay(null);
             updateFormHeaderTitle();
@@ -7026,18 +7054,33 @@ app.get('/estimates', async (c) => {
           document.querySelector('main').scrollTo(0, 0);
         }
         
-        // 新規作成
-        async function newEstimate() {
-          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
-          
+        function resetEstimateFormState() {
           currentEstimateId = null;
+          originalEstimateStatus = null;
+          selectedClient = null;
           document.getElementById('estimateForm').reset();
           items = [];
           addItemRow();
           
-          // 自動採番
-          var res = await axios.get('/api/estimates/next-no');
-          document.querySelector('[name="estimate_no"]').value = res.data.next_no;
+          document.querySelector('[name="estimate_no"]').value = '';
+          document.getElementById('clientInfo').classList.add('hidden');
+          document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('selectedClientName').textContent = '';
+          document.getElementById('clientSearchInput').value = '';
+          document.getElementById('clientSelect').value = '';
+          document.getElementById('priceTypeHint').textContent = '';
+          document.getElementById('clientWholesaleInfo').textContent = '';
+          
+          updateTaxDisplay(null);
+          updateFormHeaderTitle();
+        }
+        
+        // 新規作成
+        async function newEstimate() {
+          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
+          
+          setFormHeaderMode('new', '<i class="fas fa-file-invoice mr-2 text-blue-600"></i>');
+          resetEstimateFormState();
           
           // 今日の日付
           var today = new Date().toISOString().split('T')[0];
@@ -7063,22 +7106,12 @@ app.get('/estimates', async (c) => {
             document.querySelector('[name="valid_until"]').value = validUntil.toISOString().split('T')[0];
           }
           
-          setFormHeaderMode('new', '<i class="fas fa-file-invoice mr-2 text-blue-600"></i>');
-          updateFormHeaderTitle();
           document.getElementById('deleteEstimateBtn').classList.add('hidden');
           document.getElementById('duplicateEstimateBtn').classList.add('hidden');
           document.getElementById('pdfEstimateBtn').classList.add('hidden');
           document.getElementById('newEstimateBtnDetail').classList.add('hidden');
           
-          originalEstimateStatus = null;  // 新規なので元ステータスなし
-          selectedClient = null;
-          document.getElementById('clientInfo').classList.add('hidden');
-          document.getElementById('selectedClientDisplay').classList.add('hidden');
-          document.getElementById('clientSearchInput').value = '';
-          document.getElementById('clientSelect').value = '';
-          
           renderItemsTable();
-          updateTaxDisplay(null);
           calculateTotals();
           showDetailView();
           formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -7222,6 +7255,10 @@ app.get('/estimates', async (c) => {
             } else {
               var res = await axios.post('/api/estimates', data);
               currentEstimateId = res.data.id;
+              if (res.data && res.data.estimate_no) {
+                document.querySelector('[name="estimate_no"]').value = res.data.estimate_no;
+                updateFormHeaderTitle();
+              }
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -7344,9 +7381,8 @@ app.get('/estimates', async (c) => {
           // 新規として扱う
           currentEstimateId = null;
           
-          // 見積番号を新規取得
-          var res = await axios.get('/api/estimates/next-no');
-          document.querySelector('[name="estimate_no"]').value = res.data.next_no;
+          // 複製時は番号を空にする（保存時に採番）
+          document.querySelector('[name="estimate_no"]').value = '';
           
           // 今日の日付
           var today = new Date().toISOString().split('T')[0];
@@ -7427,12 +7463,6 @@ app.get('/estimates', async (c) => {
           document.getElementById('deleteEstimateBtn').addEventListener('click', deleteEstimate);
           document.getElementById('duplicateEstimateBtn').addEventListener('click', duplicateEstimate);
           document.getElementById('pdfEstimateBtn').addEventListener('click', exportEstimatePDF);
-          document.getElementById('autoNumberBtn').addEventListener('click', async function() {
-            var res = await axios.get('/api/estimates/next-no');
-            document.querySelector('[name="estimate_no"]').value = res.data.next_no;
-            updateFormHeaderTitle();
-            formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
-          });
           document.querySelector('[name="estimate_no"]').addEventListener('input', function() {
             updateFormHeaderTitle();
           });
@@ -7714,10 +7744,8 @@ app.get('/invoices', async (c) => {
                     <div class="flex gap-1">
                       <input type="text" name="invoice_no"
                         class="flex-1 min-w-0 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
-                      <button type="button" id="autoNumberBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-2 py-2 rounded-lg text-sm whitespace-nowrap flex-shrink-0" title="自動採番">
-                        <i class="fas fa-magic"></i><span class="hidden sm:inline ml-1">自動</span>
-                      </button>
                     </div>
+                    <p class="text-xs text-gray-500 mt-1">未入力のまま保存すると自動採番されます。</p>
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">請求日 *</label>
@@ -8067,19 +8095,25 @@ app.get('/invoices', async (c) => {
             loadCompanyBankAccounts()
           ]);
           
-          // 今日の日付をデフォルト設定
-          var today = new Date().toISOString().split('T')[0];
-          document.querySelector('[name="invoice_date"]').value = today;
-          
-          // 今月をデフォルト設定（一括作成モーダル用）
-          var thisMonth = today.substring(0, 7);
-          var batchMonthInput = document.getElementById('batchTargetMonth');
-          if (batchMonthInput) {
-            batchMonthInput.value = thisMonth;
+          var params = new URLSearchParams(window.location.search || '');
+          var isNewAction = params.get('action') === 'new' || window.location.pathname.endsWith('/new');
+          if (isNewAction) {
+            await newInvoice();
+          } else {
+            // 今日の日付をデフォルト設定
+            var today = new Date().toISOString().split('T')[0];
+            document.querySelector('[name="invoice_date"]').value = today;
+            
+            // 今月をデフォルト設定（一括作成モーダル用）
+            var thisMonth = today.substring(0, 7);
+            var batchMonthInput = document.getElementById('batchTargetMonth');
+            if (batchMonthInput) {
+              batchMonthInput.value = thisMonth;
+            }
+            
+            // 空の明細行を1つ追加
+            addItemRow();
           }
-          
-          // 空の明細行を1つ追加
-          addItemRow();
           
           setupEventListeners();
         }
@@ -8230,6 +8264,7 @@ app.get('/invoices', async (c) => {
           document.getElementById('clientSelect').value = '';
           document.getElementById('clientSearchInput').value = '';
           document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('selectedClientName').textContent = '';
           selectedClient = null;
           document.getElementById('clientInfo').classList.add('hidden');
           document.getElementById('deliveriesSection').classList.add('hidden');
@@ -8247,6 +8282,8 @@ app.get('/invoices', async (c) => {
             selectedClient = null;
             clientInfoDiv.classList.add('hidden');
             deliveriesSection.classList.add('hidden');
+            document.getElementById('selectedClientDisplay').classList.add('hidden');
+            document.getElementById('selectedClientName').textContent = '';
             updateFormHeaderTitle();
             return;
           }
@@ -8560,42 +8597,46 @@ app.get('/invoices', async (c) => {
           document.querySelector('main').scrollTo(0, 0);
         }
         
-        // 新規作成
-        async function newInvoice() {
-          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
-          
+        function resetInvoiceFormState() {
           currentInvoiceId = null;
+          originalInvoiceStatus = null;
           selectedDeliveryIds = [];
+          selectedClient = null;
           document.getElementById('invoiceForm').reset();
           items = [];
           addItemRow();
           
-          // 自動採番
-          var res = await axios.get('/api/invoices/next-no');
-          document.querySelector('[name="invoice_no"]').value = res.data.next_no;
+          document.querySelector('[name="invoice_no"]').value = '';
+          document.getElementById('clientInfo').classList.add('hidden');
+          document.getElementById('selectedClientDisplay').classList.add('hidden');
+          document.getElementById('selectedClientName').textContent = '';
+          document.getElementById('clientSearchInput').value = '';
+          document.getElementById('clientSelect').value = '';
+          
+          document.getElementById('deliveriesSection').classList.add('hidden');
+          document.getElementById('deliveriesList').innerHTML = '<p class="text-sm text-gray-500">得意先を選択して「納品書を取得」をクリックしてください</p>';
+          document.getElementById('selectedDeliveriesInfo').classList.add('hidden');
+          document.getElementById('bankAccountSelect').value = '';
+          document.getElementById('bankAccountPreview').classList.add('hidden');
+          
+          updateFormHeaderTitle();
+        }
+        
+        // 新規作成
+        async function newInvoice() {
+          if (formChanged && !(await window.SmartBill.confirmLeaveAsync())) return;
+          
+          setFormHeaderMode('new', '<i class="fas fa-file-invoice-dollar mr-2 text-indigo-600"></i>');
+          resetInvoiceFormState();
           
           // 今日の日付
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="invoice_date"]').value = today;
           
-          setFormHeaderMode('new', '<i class="fas fa-file-invoice-dollar mr-2 text-indigo-600"></i>');
-          updateFormHeaderTitle();
           document.getElementById('deleteInvoiceBtn').classList.add('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.add('hidden');
           document.getElementById('pdfInvoiceBtn').classList.add('hidden');
           document.getElementById('newInvoiceBtnDetail').classList.add('hidden');
-          
-          originalInvoiceStatus = null;
-          selectedClient = null;
-          document.getElementById('clientInfo').classList.add('hidden');
-          document.getElementById('selectedClientDisplay').classList.add('hidden');
-          document.getElementById('clientSearchInput').value = '';
-          document.getElementById('deliveriesSection').classList.add('hidden');
-          document.getElementById('deliveriesList').innerHTML = '<p class="text-sm text-gray-500">得意先を選択して「納品書を取得」をクリックしてください</p>';
-          document.getElementById('bankAccountSelect').value = '';
-          document.getElementById('bankAccountPreview').classList.add('hidden');
-          
-          document.getElementById('clientSelect').value = '';
           
           renderItemsTable();
           calculateTotals();
@@ -8730,6 +8771,10 @@ app.get('/invoices', async (c) => {
             } else {
               var res = await axios.post('/api/invoices', data);
               currentInvoiceId = res.data.id;
+              if (res.data && res.data.invoice_no) {
+                document.querySelector('[name="invoice_no"]').value = res.data.invoice_no;
+                updateFormHeaderTitle();
+              }
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
@@ -8913,8 +8958,7 @@ app.get('/invoices', async (c) => {
           currentInvoiceId = null;
           selectedDeliveryIds = [];
           
-          var res = await axios.get('/api/invoices/next-no');
-          document.querySelector('[name="invoice_no"]').value = res.data.next_no;
+          document.querySelector('[name="invoice_no"]').value = '';
           
           var today = new Date().toISOString().split('T')[0];
           document.querySelector('[name="invoice_date"]').value = today;
@@ -9299,12 +9343,6 @@ app.get('/invoices', async (c) => {
           document.getElementById('deleteInvoiceBtn').addEventListener('click', deleteInvoice);
           document.getElementById('duplicateInvoiceBtn').addEventListener('click', duplicateInvoice);
           document.getElementById('pdfInvoiceBtn').addEventListener('click', exportInvoicePDF);
-          document.getElementById('autoNumberBtn').addEventListener('click', async function() {
-            var res = await axios.get('/api/invoices/next-no');
-            document.querySelector('[name="invoice_no"]').value = res.data.next_no;
-            updateFormHeaderTitle();
-            formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
-          });
           document.querySelector('[name="invoice_no"]').addEventListener('input', function() {
             updateFormHeaderTitle();
           });
