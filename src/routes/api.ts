@@ -7,6 +7,7 @@ import type {
   CutDirection,
   FabricSpec,
 } from '../features/fabric-calculator/types'
+import { accountTypeCodeToLabel, normalizeAccountTypeToCode } from '../utils/bankAccount'
 
 const api = new Hono()
 const isDev = process.env.NODE_ENV !== 'production'
@@ -46,6 +47,42 @@ const getRequestLabel = (c: any): string => {
   }
 }
 
+const normalizeBankAccountIdsInput = (value: unknown): { ids: string[]; error?: string } => {
+  let rawList: unknown[] = []
+
+  if (value === undefined || value === null) {
+    rawList = []
+  } else if (Array.isArray(value)) {
+    rawList = value
+  } else if (typeof value === 'string') {
+    const raw = value.trim()
+    if (!raw) {
+      rawList = []
+    } else if (raw.startsWith('[') && raw.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(raw)
+        rawList = Array.isArray(parsed) ? parsed : [raw]
+      } catch {
+        rawList = [raw]
+      }
+    } else {
+      rawList = raw.split(/[,\s]+/)
+    }
+  } else {
+    rawList = [value]
+  }
+
+  const normalized = rawList
+    .map((id) => String(id).trim())
+    .filter(Boolean)
+
+  const unique = Array.from(new Set(normalized))
+  const hasInvalid = unique.some((id) => !/^\d+$/.test(id))
+  if (hasInvalid) return { ids: [], error: 'Invalid bank_account_ids' }
+  if (unique.length > 3) return { ids: unique, error: 'bank_account_ids must be at most 3' }
+  return { ids: unique }
+}
+
 const handleSupabaseError = (
   c: any,
   err: unknown,
@@ -65,6 +102,13 @@ const handleSupabaseError = (
   }
   console.error(`[API][error] ${label} ${operation} error=${message}`)
   return c.json({ success: false, error: message }, statusCode)
+}
+
+const isMissingBankAccountIdsColumn = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false
+  const code = (err as any).code
+  const message = String((err as any).message || '')
+  return code === 'PGRST204' && message.includes('bank_account_ids')
 }
 
 api.use('*', async (c, next) => {
@@ -130,11 +174,234 @@ api.get('/company', async (c) => {
     .maybeSingle()
 
   if (error) return handleSupabaseError(c, error, 'company_info select')
-  return c.json(data || {})
+  const company = data || {}
+  let bankAccountsList: any[] = []
+  try {
+    const r0 = await supabase
+      .from('bank_accounts')
+      .select('*')
+      .eq('user_id', DEMO_USER_ID)
+      .is('customer_id', null)
+      .order('is_default', { ascending: false })
+      .order('display_order', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(5)
+    if (!r0.error) {
+      bankAccountsList = r0.data || []
+    } else {
+      console.error('[API] GET /api/company bank_accounts r0 error=', r0.error)
+      bankAccountsList = []
+    }
+  } catch (e) {
+    console.error('[API] GET /api/company bank_accounts r0 exception=', e)
+    bankAccountsList = []
+  }
+
+  const normalizedBankAccounts = (bankAccountsList || []).map((row: any) => {
+    const branchName = row.branch_name ?? row.bank_branch ?? ''
+    const accountType = normalizeAccountTypeToCode(row.account_type) || 'ordinary'
+    const accountHolder = row.account_holder ?? row.account_name ?? ''
+    return {
+      ...row,
+      branch_name: branchName,
+      bank_branch: branchName,
+      account_type: accountType,
+      account_type_label: accountTypeCodeToLabel(accountType),
+      account_number: row.account_number ?? '',
+      account_holder: accountHolder,
+      is_default: !!row.is_default,
+      display_order: row.display_order ?? 0,
+      id: row.id
+    }
+  })
+
+  console.log('[API] GET /api/company bank_accounts length=', (normalizedBankAccounts || []).length)
+
+  // ★重要：bank_accounts が取れなくても 500 にしない（company を返す）
+  return c.json({
+    ...company,
+    bank_accounts: normalizedBankAccounts,
+    bank_accounts_list: normalizedBankAccounts,
+  })
+})
+
+// =====================================
+// 振込先 API
+// =====================================
+api.get('/bank-accounts', async (c) => {
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select('*')
+    .eq('user_id', DEMO_USER_ID)
+    .order('is_default', { ascending: false })
+    .order('id', { ascending: true })
+
+  if (error) {
+    console.error('[API][error] GET /api/bank-accounts supabase_error=', error)
+    return handleSupabaseError(c, error, 'bank_accounts select list')
+  }
+  const rows = (data || []).map((row: any) => {
+    const accountName =
+      row.account_name ??
+      row.account_holder ??
+      row.account_holder_name ??
+      row.holder_name ??
+      row.account_name_kana ??
+      row.account_name_katakana ??
+      ''
+    return {
+      id: row.id,
+      bank_name: row.bank_name || '',
+      bankName: row.bank_name || '',
+      branch_name: row.branch_name || '',
+      branchName: row.branch_name || '',
+      account_type: row.account_type || '',
+      accountType: row.account_type || '',
+      account_number: row.account_number || '',
+      accountNumber: row.account_number || '',
+      account_name: accountName,
+      accountName: accountName,
+      is_default: row.is_default ?? 0,
+      isDefault: row.is_default ?? 0,
+      created_at: row.created_at ?? null,
+      createdAt: row.created_at ?? null
+    }
+  })
+  console.log(`[API] GET /api/bank-accounts user_id=${DEMO_USER_ID} count=${rows.length}`)
+  return c.json({ success: true, bank_accounts: rows })
 })
 
 api.put('/company', async (c) => {
   const data = await c.req.json()
+  const bankAccounts =
+    Array.isArray(data.bank_accounts)
+      ? data.bank_accounts
+      : Array.isArray(data.bankAccounts)
+        ? data.bankAccounts
+        : []
+  if (bankAccounts.length > 5) {
+    return c.json({ success: false, error: 'bank_accounts must be at most 5' }, 400)
+  }
+  const toTrimmedString = (value: unknown): string => {
+    if (value === null || value === undefined) return ''
+    return String(value).trim()
+  }
+  const normalizedBankAccounts = bankAccounts.map((a: any) => {
+    const branchName = toTrimmedString(a?.branch_name ?? a?.bank_branch ?? '')
+    const accountType = normalizeAccountTypeToCode(a?.account_type ?? a?.accountType) || 'ordinary'
+    const accountHolder = toTrimmedString(a?.account_holder ?? a?.account_name ?? '')
+    return {
+      ...a,
+      bank_name: toTrimmedString(a?.bank_name ?? a?.bankName ?? ''),
+      branch_name: branchName,
+      bank_branch: branchName,
+      account_type: accountType,
+      accountType: accountType,
+      account_number: toTrimmedString(a?.account_number ?? a?.accountNumber ?? ''),
+      account_holder: accountHolder,
+      account_name: accountHolder,
+    }
+  })
+  let hasDefault = false
+  normalizedBankAccounts.forEach((a: any, index: number) => {
+    const isDefault = !!(a?.is_default ?? a?.isDefault)
+    if (!hasDefault && isDefault) {
+      hasDefault = true
+      a.is_default = true
+    } else {
+      a.is_default = false
+    }
+    a.display_order = index + 1
+  })
+  if (!hasDefault && normalizedBankAccounts.length > 0) {
+    normalizedBankAccounts[0].is_default = true
+  }
+  let bankAccountIds = bankAccounts
+    .map((a: any) => a?.id ?? a?.bank_account_id ?? a?.bankAccountId)
+    .filter((v: any) => v !== null && v !== undefined && v !== '')
+    .map((v: any) => String(v))
+  const toValidId = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    const n = Number(value)
+    if (!Number.isFinite(n) || n <= 0) return null
+    return n
+  }
+  const accountsWithId = normalizedBankAccounts.filter((a: any) => toValidId(a?.id ?? a?.bank_account_id ?? a?.bankAccountId) !== null)
+  const accountsWithoutId = normalizedBankAccounts.filter((a: any) => toValidId(a?.id ?? a?.bank_account_id ?? a?.bankAccountId) === null)
+  console.log('[API] PUT /api/company existing=', accountsWithId.length, 'fresh=', accountsWithoutId.length)
+  let upsertedIds: string[] = []
+  let insertedIds: string[] = []
+  if (accountsWithId.length > 0) {
+    const upsertRows = accountsWithId.map((a: any, index: number) => ({
+      id: toValidId(a?.id ?? a?.bank_account_id ?? a?.bankAccountId) as number,
+      user_id: DEMO_USER_ID,
+      customer_id: null,
+      bank_name: toTrimmedString(a?.bank_name ?? a?.bankName ?? ''),
+      branch_name: toTrimmedString(a?.branch_name ?? a?.bank_branch ?? ''),
+      account_type: normalizeAccountTypeToCode(a?.account_type ?? a?.accountType) || 'ordinary',
+      account_number: toTrimmedString(a?.account_number ?? a?.accountNumber ?? ''),
+      account_holder: toTrimmedString(a?.account_holder ?? a?.account_name ?? a?.accountName ?? ''),
+      is_default: !!a?.is_default,
+      display_order: a?.display_order ?? a?.displayOrder ?? index + 1,
+      updated_at: new Date().toISOString(),
+    }))
+    const { data: upserted, error: upsertError } = await supabase
+      .from('bank_accounts')
+      .upsert(upsertRows, { onConflict: 'id' })
+      .select('id')
+    if (upsertError) return handleSupabaseError(c, upsertError, 'bank_accounts upsert')
+    upsertedIds = (upserted || [])
+      .map((row: any) => row?.id)
+      .filter((v: any) => v !== null && v !== undefined && v !== '')
+      .map((v: any) => String(v))
+    console.log('[API] PUT /api/company upserted ids=', upsertedIds)
+  }
+  if (accountsWithoutId.length > 0) {
+    const insertRows = accountsWithoutId.map((a: any, index: number) => ({
+      user_id: DEMO_USER_ID,
+      customer_id: null,
+      bank_name: toTrimmedString(a?.bank_name ?? a?.bankName ?? ''),
+      branch_name: toTrimmedString(a?.branch_name ?? a?.bank_branch ?? ''),
+      account_type: normalizeAccountTypeToCode(a?.account_type ?? a?.accountType) || 'ordinary',
+      account_number: toTrimmedString(a?.account_number ?? a?.accountNumber ?? ''),
+      account_holder: toTrimmedString(a?.account_holder ?? a?.account_name ?? a?.accountName ?? ''),
+      is_default: !!a?.is_default,
+      display_order: a?.display_order ?? a?.displayOrder ?? index + 1,
+      updated_at: new Date().toISOString(),
+    }))
+    const { data: inserted, error: insertError } = await supabase
+      .from('bank_accounts')
+      .insert(insertRows)
+      .select('id')
+    if (insertError) return handleSupabaseError(c, insertError, 'bank_accounts insert')
+    insertedIds = (inserted || [])
+      .map((row: any) => row?.id)
+      .filter((v: any) => v !== null && v !== undefined && v !== '')
+      .map((v: any) => String(v))
+    console.log('[API] PUT /api/company inserted ids=', insertedIds)
+  }
+  if (upsertedIds.length > 0 || insertedIds.length > 0) {
+    bankAccountIds = [...upsertedIds, ...insertedIds]
+  }
+  if (Array.isArray(bankAccounts)) {
+    const payloadIds = bankAccountIds
+    if (payloadIds.length > 0) {
+      const { error: deleteError } = await supabase
+        .from('bank_accounts')
+        .delete()
+        .eq('user_id', DEMO_USER_ID)
+        .is('customer_id', null)
+        .not('id', 'in', `(${payloadIds.join(',')})`)
+      if (deleteError) return handleSupabaseError(c, deleteError, 'bank_accounts delete')
+    } else {
+      const { error: deleteError } = await supabase
+        .from('bank_accounts')
+        .delete()
+        .eq('user_id', DEMO_USER_ID)
+        .is('customer_id', null)
+      if (deleteError) return handleSupabaseError(c, deleteError, 'bank_accounts delete')
+    }
+  }
   const { data: existing, error: existingError } = await supabase
     .from('company_info')
     .select('id')
@@ -144,94 +411,148 @@ api.put('/company', async (c) => {
   if (existingError) return handleSupabaseError(c, existingError, 'company_info select id')
   
   // 銀行口座情報をJSON文字列に変換
-  const bankAccountsJson = JSON.stringify(data.bank_accounts || [])
+  const bankAccountsJson = JSON.stringify(normalizedBankAccounts)
   
   if (existing) {
-    const { error } = await supabase
+    const updatePayload: any = {
+      company_name: data.company_name,
+      department_name: data.department_name || '',
+      person_name: data.person_name || '',
+      representative_title: data.representative_title || '',
+      representative_name: data.representative_name || '',
+      postal_code: data.postal_code || '',
+      address: data.address || '',
+      address_number: data.address_number || '',
+      building_name: data.building_name || '',
+      tel: data.tel || '',
+      fax: data.fax || '',
+      email: data.email || '',
+      website: data.website || '',
+      invoice_registration_no: data.invoice_registration_no || '',
+      logo_url: data.logo_url || '',
+      stamp_url: data.stamp_url || '',
+      bank_name: data.bank_name || '',
+      bank_branch: data.bank_branch || '',
+      account_type: data.account_type || '',
+      account_number: data.account_number || '',
+      account_holder: data.account_holder || '',
+      bank_accounts: bankAccountsJson,
+      bank_account_ids: bankAccountIds,
+      default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
+      default_tax_type: data.default_tax_type || 'standard',
+      default_tax_rate: data.default_tax_rate || 10,
+      default_closing_day: data.default_closing_day || '',
+      default_payment_day: data.default_payment_day || '',
+      show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
+      estimate_valid_days: data.estimate_valid_days || 30,
+      default_delivery_place: data.default_delivery_place || '',
+      default_payment_terms: data.default_payment_terms || '',
+      default_delivery_date: data.default_delivery_date || '',
+      delivery_note_format: data.delivery_note_format || 'half',
+      updated_at: new Date().toISOString()
+    }
+    let { error } = await supabase
       .from('company_info')
-      .update({
-        company_name: data.company_name,
-        department_name: data.department_name || '',
-        person_name: data.person_name || '',
-        representative_title: data.representative_title || '',
-        representative_name: data.representative_name || '',
-        postal_code: data.postal_code || '',
-        address: data.address || '',
-        address_number: data.address_number || '',
-        building_name: data.building_name || '',
-        tel: data.tel || '',
-        fax: data.fax || '',
-        email: data.email || '',
-        website: data.website || '',
-        invoice_registration_no: data.invoice_registration_no || '',
-        logo_url: data.logo_url || '',
-        stamp_url: data.stamp_url || '',
-        bank_name: data.bank_name || '',
-        bank_branch: data.bank_branch || '',
-        account_type: data.account_type || '',
-        account_number: data.account_number || '',
-        account_holder: data.account_holder || '',
-        bank_accounts: bankAccountsJson,
-        default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
-        default_tax_type: data.default_tax_type || 'standard',
-        default_tax_rate: data.default_tax_rate || 10,
-        default_closing_day: data.default_closing_day || '',
-        default_payment_day: data.default_payment_day || '',
-        show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
-        estimate_valid_days: data.estimate_valid_days || 30,
-        default_delivery_place: data.default_delivery_place || '',
-        default_payment_terms: data.default_payment_terms || '',
-        default_delivery_date: data.default_delivery_date || '',
-        delivery_note_format: data.delivery_note_format || 'half',
-        updated_at: new Date().toISOString()
-      })
+      .update(updatePayload)
       .eq('id', existing.id)
-
+    if (error && isMissingBankAccountIdsColumn(error)) {
+      console.warn('[API] bank_account_ids column missing, skipped')
+      delete updatePayload.bank_account_ids
+      const retry = await supabase
+        .from('company_info')
+        .update(updatePayload)
+        .eq('id', existing.id)
+      error = retry.error
+    }
     if (error) return handleSupabaseError(c, error, 'company_info update')
   } else {
-    const { error } = await supabase
+    const insertPayload: any = {
+      user_id: DEMO_USER_ID,
+      company_name: data.company_name,
+      department_name: data.department_name || '',
+      person_name: data.person_name || '',
+      representative_title: data.representative_title || '',
+      representative_name: data.representative_name || '',
+      postal_code: data.postal_code || '',
+      address: data.address || '',
+      address_number: data.address_number || '',
+      building_name: data.building_name || '',
+      tel: data.tel || '',
+      fax: data.fax || '',
+      email: data.email || '',
+      website: data.website || '',
+      invoice_registration_no: data.invoice_registration_no || '',
+      logo_url: data.logo_url || '',
+      stamp_url: data.stamp_url || '',
+      bank_name: data.bank_name || '',
+      bank_branch: data.bank_branch || '',
+      account_type: data.account_type || '',
+      account_number: data.account_number || '',
+      account_holder: data.account_holder || '',
+      bank_accounts: bankAccountsJson,
+      bank_account_ids: bankAccountIds,
+      default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
+      default_tax_type: data.default_tax_type || 'standard',
+      default_tax_rate: data.default_tax_rate || 10,
+      default_closing_day: data.default_closing_day || '',
+      default_payment_day: data.default_payment_day || '',
+      show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
+      estimate_valid_days: data.estimate_valid_days || 30,
+      default_delivery_place: data.default_delivery_place || '',
+      default_payment_terms: data.default_payment_terms || '',
+      default_delivery_date: data.default_delivery_date || '',
+      delivery_note_format: data.delivery_note_format || 'half'
+    }
+    let { error } = await supabase
       .from('company_info')
-      .insert({
-        user_id: DEMO_USER_ID,
-        company_name: data.company_name,
-        department_name: data.department_name || '',
-        person_name: data.person_name || '',
-        representative_title: data.representative_title || '',
-        representative_name: data.representative_name || '',
-        postal_code: data.postal_code || '',
-        address: data.address || '',
-        address_number: data.address_number || '',
-        building_name: data.building_name || '',
-        tel: data.tel || '',
-        fax: data.fax || '',
-        email: data.email || '',
-        website: data.website || '',
-        invoice_registration_no: data.invoice_registration_no || '',
-        logo_url: data.logo_url || '',
-        stamp_url: data.stamp_url || '',
-        bank_name: data.bank_name || '',
-        bank_branch: data.bank_branch || '',
-        account_type: data.account_type || '',
-        account_number: data.account_number || '',
-        account_holder: data.account_holder || '',
-        bank_accounts: bankAccountsJson,
-        default_bank_account_index: data.default_bank_account_index !== undefined ? data.default_bank_account_index : -1,
-        default_tax_type: data.default_tax_type || 'standard',
-        default_tax_rate: data.default_tax_rate || 10,
-        default_closing_day: data.default_closing_day || '',
-        default_payment_day: data.default_payment_day || '',
-        show_tax_on_estimate_delivery: data.show_tax_on_estimate_delivery ? 1 : 0,
-        estimate_valid_days: data.estimate_valid_days || 30,
-        default_delivery_place: data.default_delivery_place || '',
-        default_payment_terms: data.default_payment_terms || '',
-        default_delivery_date: data.default_delivery_date || '',
-        delivery_note_format: data.delivery_note_format || 'half'
-      })
-
+      .insert(insertPayload)
+    if (error && isMissingBankAccountIdsColumn(error)) {
+      console.warn('[API] bank_account_ids column missing, skipped')
+      delete insertPayload.bank_account_ids
+      const retry = await supabase
+        .from('company_info')
+        .insert(insertPayload)
+      error = retry.error
+    }
     if (error) return handleSupabaseError(c, error, 'company_info insert')
   }
   
-  return c.json({ success: true })
+  let responseBankAccounts: any[] = []
+  try {
+    const r0 = await supabase
+      .from('bank_accounts')
+      .select('*')
+      .eq('user_id', DEMO_USER_ID)
+      .is('customer_id', null)
+      .order('is_default', { ascending: false })
+      .order('display_order', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(5)
+    if (!r0.error) {
+      responseBankAccounts = (r0.data || []).map((row: any) => {
+        const branchName = row.branch_name ?? row.bank_branch ?? ''
+        const accountType = normalizeAccountTypeToCode(row.account_type) || 'ordinary'
+        const accountHolder = row.account_holder ?? row.account_name ?? ''
+        return {
+          ...row,
+          branch_name: branchName,
+          bank_branch: branchName,
+          account_type: accountType,
+          account_type_label: accountTypeCodeToLabel(accountType),
+          account_number: row.account_number ?? '',
+          account_holder: accountHolder,
+          is_default: !!row.is_default,
+          display_order: row.display_order ?? 0,
+          id: row.id
+        }
+      })
+      bankAccountIds = responseBankAccounts.map((row: any) => String(row.id))
+    }
+  } catch (e) {
+    console.error('[API] PUT /api/company bank_accounts select exception=', e)
+  }
+  console.log('[API] PUT /api/company response bank_accounts count=', responseBankAccounts.length, 'ids=', bankAccountIds)
+  return c.json({ success: true, bank_account_ids: bankAccountIds, bank_accounts: responseBankAccounts })
 })
 
 // 画像アップロード用エンドポイント（Base64で受け取ってそのまま保存）
@@ -1255,7 +1576,12 @@ api.get('/deliveries', async (c) => {
   }
 
   if (month) {
-    query = query.like('delivery_date', `${month}%`)
+    try {
+      const { startDate, endDate } = monthRangeISO(month)
+      query = query.gte('delivery_date', startDate).lt('delivery_date', endDate)
+    } catch (err) {
+      return c.json({ error: 'Invalid month format' }, 400)
+    }
   }
 
   const { data, error } = await query
@@ -2040,28 +2366,195 @@ api.get('/dashboard/summary', async (c) => {
 // 請求書データ API
 // =====================================
 
-// 締め日から請求期間を計算するヘルパー関数
-function calculateBillingPeriod(closingDay: number | string, targetMonth: string): { start: string, end: string } {
-  // targetMonth: "YYYY-MM" 形式
-  const [year, month] = targetMonth.split('-').map(Number)
-  const closing = parseInt(String(closingDay)) || 31
-  
-  let startDate: Date, endDate: Date
-  
-  if (closing >= 28 || closing === 31) {
-    // 末締め: 当月1日〜末日
-    startDate = new Date(year, month - 1, 1)
-    endDate = new Date(year, month, 0) // 当月末日
-  } else {
-    // N日締め: 前月(N+1)日〜当月N日
-    const prevMonth = month === 1 ? 12 : month - 1
-    const prevYear = month === 1 ? year - 1 : year
-    startDate = new Date(prevYear, prevMonth - 1, closing + 1)
-    endDate = new Date(year, month - 1, closing)
+function normalizeToYYYYMM(input: unknown): string {
+  const s = String(input ?? '').trim()
+
+  if (/^\d{4}-\d{2}$/.test(s)) return s
+  if (/^\d{4}\/\d{2}$/.test(s)) return s.replace('/', '-')
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 7)
+  if (/^\d{4}\/\d{2}\/\d{2}/.test(s)) return s.slice(0, 7).replace('/', '-')
+
+  const jp = /^(\d{4})年(\d{1,2})月/.exec(s)
+  if (jp) {
+    const y = jp[1]
+    const m = String(jp[2]).padStart(2, '0')
+    return `${y}-${m}`
   }
-  
-  const formatDate = (d: Date) => d.toISOString().split('T')[0]
-  return { start: formatDate(startDate), end: formatDate(endDate) }
+
+  return ''
+}
+
+function parseYYYYMM(yyyyMm: string): { year: number, month: number, yyyyMm: string } | null {
+  const normalized = normalizeToYYYYMM(yyyyMm)
+  const m = /^(\d{4})-(\d{2})$/.exec(normalized)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return null
+  }
+  return { year, month, yyyyMm: normalized }
+}
+
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function lastDayOfMonthUTC(year: number, month1to12: number): Date {
+  return new Date(Date.UTC(year, month1to12, 0))
+}
+
+function monthRangeISO(yyyyMm: string): { startDate: string, endDate: string } {
+  const parsed = parseYYYYMM(yyyyMm)
+  if (!parsed) throw new Error('Invalid month format. expected YYYY-MM')
+  const { year, month } = parsed
+  const start = new Date(Date.UTC(year, month - 1, 1))
+  const endExclusive = new Date(Date.UTC(year, month, 1))
+  return { startDate: toISODate(start), endDate: toISODate(endExclusive) }
+}
+
+function addDaysUTC(isoDate: string, days: number): string {
+  const d = new Date(isoDate + 'T00:00:00.000Z')
+  d.setUTCDate(d.getUTCDate() + days)
+  return toISODate(d)
+}
+
+function clampDayToMonthEndUTC(year: number, month1to12: number, day: number): number {
+  const end = lastDayOfMonthUTC(year, month1to12)
+  const endDay = end.getUTCDate()
+  return Math.min(Math.max(1, day), endDay)
+}
+
+function normalizeClosingDay(closingDay: unknown): number | 'eom' | null {
+  if (closingDay === undefined || closingDay === null || closingDay === '') return null
+  if (closingDay === 'eom' || closingDay === '末') return 'eom'
+  const n = Number(closingDay)
+  if (!Number.isFinite(n)) return null
+  if (n === 0 || n === 31) return 'eom'
+  return n
+}
+
+function calcBillingPeriodFromClosing(yyyyMm: string, closingDayRaw: unknown): { periodStart: string, periodEnd: string, issueDate: string } | null {
+  const parsed = parseYYYYMM(yyyyMm)
+  if (!parsed) return null
+  const { year, month } = parsed
+  const closingDay = normalizeClosingDay(closingDayRaw)
+
+  if (closingDay === 'eom' || closingDay === null) {
+    const start = new Date(Date.UTC(year, month - 1, 1))
+    const end = lastDayOfMonthUTC(year, month)
+    const startDate = toISODate(start)
+    const endDate = toISODate(end)
+    const issueDate = addDaysUTC(endDate, 1)
+    return { periodStart: startDate, periodEnd: endDate, issueDate }
+  }
+
+  const endDay = clampDayToMonthEndUTC(year, month, closingDay)
+  const periodEnd = toISODate(new Date(Date.UTC(year, month - 1, endDay)))
+
+  const prev = { year: month === 1 ? year - 1 : year, month: month === 1 ? 12 : month - 1 }
+  const prevEndDay = clampDayToMonthEndUTC(prev.year, prev.month, closingDay)
+  const prevPeriodEnd = toISODate(new Date(Date.UTC(prev.year, prev.month - 1, prevEndDay)))
+  const periodStart = addDaysUTC(prevPeriodEnd, 1)
+
+  const issueDate = addDaysUTC(periodEnd, 1)
+  return { periodStart, periodEnd, issueDate }
+}
+
+function normalizeDueDay(dueDayRaw: unknown): number | 'eom' | null {
+  if (dueDayRaw === undefined || dueDayRaw === null || dueDayRaw === '') return null
+  if (dueDayRaw === 'eom' || dueDayRaw === '末') return 'eom'
+  const n = Number(dueDayRaw)
+  if (!Number.isFinite(n)) return null
+  if (n === 0 || n === 31) return 'eom'
+  return n
+}
+
+function parsePaymentRule(paymentDayRaw: unknown): { monthOffset: number, dueDayRaw: unknown } | null {
+  if (paymentDayRaw === undefined || paymentDayRaw === null || paymentDayRaw === '') return null
+  const value = String(paymentDayRaw).trim()
+  if (!value) return null
+  let monthOffset = 1
+  if (value.includes('翌々月')) {
+    monthOffset = 2
+  } else if (value.includes('翌月')) {
+    monthOffset = 1
+  } else if (value.includes('当月')) {
+    monthOffset = 0
+  }
+  let dueDayRaw: unknown = null
+  if (value.includes('末')) {
+    dueDayRaw = 'eom'
+  } else {
+    const m = value.match(/(\d{1,2})/)
+    if (m) dueDayRaw = Number(m[1])
+  }
+  return { monthOffset, dueDayRaw }
+}
+
+function calcDueDateFromRule(periodEndISO: string, monthOffsetRaw: unknown, dueDayRaw: unknown): string {
+  const monthOffset = Number(monthOffsetRaw ?? 0)
+  const dueDay = normalizeDueDay(dueDayRaw)
+
+  const base = new Date(periodEndISO + 'T00:00:00.000Z')
+  const y = base.getUTCFullYear()
+  const m = base.getUTCMonth() + 1
+
+  const payMonthFirst = new Date(Date.UTC(y, m - 1, 1))
+  payMonthFirst.setUTCMonth(payMonthFirst.getUTCMonth() + monthOffset)
+
+  const payYear = payMonthFirst.getUTCFullYear()
+  const payMonth = payMonthFirst.getUTCMonth() + 1
+
+  if (dueDay === 'eom' || dueDay === null) {
+    return toISODate(lastDayOfMonthUTC(payYear, payMonth))
+  }
+
+  const d = clampDayToMonthEndUTC(payYear, payMonth, dueDay)
+  return toISODate(new Date(Date.UTC(payYear, payMonth - 1, d)))
+}
+
+function normalizeBankAccountId(account: any, index: number): string {
+  if (account.id) return String(account.id)
+  return ''
+}
+
+async function fetchBankAccountsForUser(): Promise<any[]> {
+  const { data, error } = await supabase
+    .from('bank_accounts')
+    .select('*')
+    .eq('user_id', DEMO_USER_ID)
+  if (error || !data) return []
+  return data
+}
+
+async function fetchInvoiceBankAccounts(invoiceIds: number[]): Promise<Map<number, any[]>> {
+  const map = new Map<number, any[]>()
+  if (!invoiceIds || invoiceIds.length === 0) return map
+  let data: any[] | null = null
+  const ordered = await supabase
+    .from('invoice_bank_accounts')
+    .select('invoice_id, bank_account_id, sort_order')
+    .in('invoice_id', invoiceIds)
+    .order('sort_order', { ascending: true })
+  if (!ordered.error && ordered.data) {
+    data = ordered.data as any[]
+  } else {
+    const fallback = await supabase
+      .from('invoice_bank_accounts')
+      .select('invoice_id, bank_account_id')
+      .in('invoice_id', invoiceIds)
+    if (!fallback.error && fallback.data) {
+      data = fallback.data as any[]
+    }
+  }
+  if (!data) return map
+  for (const row of data) {
+    const id = Number(row.invoice_id)
+    if (!map.has(id)) map.set(id, [])
+    map.get(id)!.push(row)
+  }
+  return map
 }
 
 // 最近編集した請求書
@@ -2163,18 +2656,58 @@ api.get('/invoices/next-no', async (c) => {
 // 未請求の納品書を取得（締め日計算対応）
 api.get('/invoices/uninvoiced-deliveries', async (c) => {
   const clientId = c.req.query('client_id')
-  const closingDay = c.req.query('closing_day') || '31'
   const targetMonth = c.req.query('month') || new Date().toISOString().slice(0, 7)
   
-  const { start, end } = calculateBillingPeriod(closingDay, targetMonth)
+  const { data: companyInfo, error: companyError } = await supabase
+    .from('company_info')
+    .select('default_closing_day, default_payment_day')
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (companyError) return handleSupabaseError(c, companyError, 'company_info select defaults')
+
+  let clientClosingDay: unknown = c.req.query('closing_day') || null
+  let clientPaymentDay: unknown = null
+  if (clientId) {
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('closing_day, payment_day')
+      .eq('id', clientId)
+      .eq('user_id', DEMO_USER_ID)
+      .maybeSingle()
+
+    if (clientError) return handleSupabaseError(c, clientError, 'clients select for uninvoiced-deliveries')
+    if (client) {
+      clientClosingDay = client.closing_day || clientClosingDay
+      clientPaymentDay = client.payment_day || clientPaymentDay
+    }
+  }
+
+  const resolvedClosingDay = clientClosingDay || companyInfo?.default_closing_day || null
+  const resolvedPaymentDay = clientPaymentDay || companyInfo?.default_payment_day || null
+  let periodStart: string
+  let periodEnd: string
+  let issueDate: string
+  let dueDate: string | null = null
+  try {
+    const billing = calcBillingPeriodFromClosing(targetMonth, resolvedClosingDay)
+    if (!billing) return c.json({ error: 'Invalid month format' }, 400)
+    periodStart = billing.periodStart
+    periodEnd = billing.periodEnd
+    issueDate = billing.issueDate
+    const paymentRule = parsePaymentRule(resolvedPaymentDay)
+    dueDate = paymentRule ? calcDueDateFromRule(periodEnd, paymentRule.monthOffset, paymentRule.dueDayRaw) : null
+  } catch (err) {
+    return c.json({ error: 'Invalid month format' }, 400)
+  }
   
   let query = supabase
     .from('deliveries')
     .select('*, clients(client_name)')
     .is('invoice_id', null)
     .in('status', ['delivered', 'issued'])
-    .gte('delivery_date', start)
-    .lte('delivery_date', end)
+    .gte('delivery_date', periodStart)
+    .lte('delivery_date', periodEnd)
     .eq('user_id', DEMO_USER_ID)
 
   if (clientId) {
@@ -2194,7 +2727,7 @@ api.get('/invoices/uninvoiced-deliveries', async (c) => {
 
   return c.json({
     deliveries,
-    billing_period: { start, end }
+    billing_period: { start: periodStart, end: periodEnd, issue_date: issueDate, due_date: dueDate }
   })
 })
 
@@ -2202,13 +2735,38 @@ api.get('/invoices/uninvoiced-deliveries', async (c) => {
 api.get('/invoices/uninvoiced-summary', async (c) => {
   const targetMonth = c.req.query('month') || new Date().toISOString().slice(0, 7)
   
+  let nextMonthStart: string
+  let prevMonthStart: string
+  try {
+    const { startDate, endDate } = monthRangeISO(targetMonth)
+    nextMonthStart = endDate
+    const parsed = parseYYYYMM(targetMonth)
+    if (!parsed) return c.json({ error: 'Invalid month format' }, 400)
+    const { year, month } = parsed
+    prevMonthStart = toISODate(new Date(Date.UTC(year, month - 2, 1)))
+  } catch (err) {
+    return c.json({ error: 'Invalid month format' }, 400)
+  }
+
+  const { data: companyInfo, error: companyError } = await supabase
+    .from('company_info')
+    .select('default_closing_day, default_payment_day')
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (companyError) return handleSupabaseError(c, companyError, 'company_info select defaults')
+
+  const defaultClosingDay = companyInfo?.default_closing_day || null
+  const defaultPaymentDay = companyInfo?.default_payment_day || null
+
   // 各得意先の締め日を考慮して未請求納品書をカウント
   const { data, error } = await supabase
     .from('deliveries')
     .select('id, total_amount, delivery_date, client_id, clients(client_name, client_code, closing_day, payment_day)')
     .is('invoice_id', null)
     .in('status', ['delivered', 'issued'])
-    .like('delivery_date', `${targetMonth}%`)
+    .gte('delivery_date', prevMonthStart)
+    .lt('delivery_date', nextMonthStart)
     .eq('user_id', DEMO_USER_ID)
 
   if (error) return handleSupabaseError(c, error, 'deliveries select uninvoiced summary')
@@ -2218,15 +2776,27 @@ api.get('/invoices/uninvoiced-summary', async (c) => {
     const clientId = String(row.client_id || '')
     if (!clientId) continue
     const client = row.clients || {}
+    const closingDay = client.closing_day || defaultClosingDay || null
+    const paymentDay = client.payment_day || defaultPaymentDay || null
+    const billing = calcBillingPeriodFromClosing(targetMonth, closingDay)
+    if (!billing) continue
+    const { periodStart, periodEnd, issueDate } = billing
     const existing = summary.get(clientId)
     const deliveryDate = row.delivery_date || ''
+    if (!deliveryDate || deliveryDate < periodStart || deliveryDate > periodEnd) continue
+    const paymentRule = parsePaymentRule(paymentDay)
+    const dueDate = paymentRule ? calcDueDateFromRule(periodEnd, paymentRule.monthOffset, paymentRule.dueDayRaw) : null
     if (!existing) {
       summary.set(clientId, {
         client_id: row.client_id,
         client_name: client.client_name || '',
         client_code: client.client_code || '',
-        closing_day: client.closing_day || null,
-        payment_day: client.payment_day || null,
+        closing_day: closingDay,
+        payment_day: paymentDay,
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
+        issue_date: issueDate,
+        due_date: dueDate,
         delivery_count: 1,
         total_amount: row.total_amount || 0,
         first_delivery_date: deliveryDate,
@@ -2254,12 +2824,22 @@ api.get('/invoices/uninvoiced-summary', async (c) => {
 // 未納品データのチェック（アラート用）
 api.get('/invoices/undelivered-check', async (c) => {
   const targetMonth = c.req.query('month') || new Date().toISOString().slice(0, 7)
+  let startDate: string
+  let endDate: string
+  try {
+    const range = monthRangeISO(targetMonth)
+    startDate = range.startDate
+    endDate = range.endDate
+  } catch (err) {
+    return c.json({ error: 'Invalid month format' }, 400)
+  }
   
   // 納品日がターゲット月で、ステータスが「納品済」以外のデータをカウント
   const { data, error } = await supabase
     .from('deliveries')
     .select('status, clients(client_name)')
-    .like('delivery_date', `${targetMonth}%`)
+    .gte('delivery_date', startDate)
+    .lt('delivery_date', endDate)
     .not('status', 'in', '("delivered","issued","invoiced")')
     .eq('user_id', DEMO_USER_ID)
 
@@ -2288,6 +2868,27 @@ api.post('/invoices/batch-create', async (c) => {
     return c.json({ error: '得意先を選択してください' }, 400)
   }
   
+  const { data: companyInfo, error: companyError } = await supabase
+    .from('company_info')
+    .select('default_closing_day, default_payment_day')
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (companyError) return handleSupabaseError(c, companyError, 'company_info select defaults')
+
+  const bankAccounts = await fetchBankAccountsForUser()
+  const defaultBankAccountIds = bankAccounts
+    .map((account: any, index: number) => normalizeBankAccountId(account, index))
+    .filter((id: string) => /^\d+$/.test(id))
+    .slice(0, 3)
+  const requestedBankAccountIds = Array.isArray(data.bank_account_ids)
+    ? data.bank_account_ids
+        .map((id: any) => String(id).trim())
+        .filter((id: string) => /^\d+$/.test(id))
+        .slice(0, 3)
+    : []
+  const bankAccountIdsForInsert = requestedBankAccountIds.length > 0 ? requestedBankAccountIds : defaultBankAccountIds
+
   const createdInvoices: any[] = []
   
   for (const clientId of client_ids) {
@@ -2302,8 +2903,19 @@ api.post('/invoices/batch-create', async (c) => {
     if (clientError) return handleSupabaseError(c, clientError, 'clients select for batch-create')
     if (!client) continue
 
-    const closingDay = client.closing_day || 31
-    const { start, end } = calculateBillingPeriod(closingDay, target_month)
+    const closingDay = client.closing_day || companyInfo?.default_closing_day || null
+    let periodStart: string
+    let periodEnd: string
+    let issueDate: string
+    try {
+      const billing = calcBillingPeriodFromClosing(target_month, closingDay)
+      if (!billing) return c.json({ error: 'Invalid month format' }, 400)
+      periodStart = billing.periodStart
+      periodEnd = billing.periodEnd
+      issueDate = billing.issueDate
+    } catch (err) {
+      return c.json({ error: 'Invalid month format' }, 400)
+    }
     
     // 未請求納品書を取得
     const { data: deliveries, error: deliveriesError } = await supabase
@@ -2312,8 +2924,8 @@ api.post('/invoices/batch-create', async (c) => {
       .eq('client_id', clientId)
       .is('invoice_id', null)
       .in('status', ['delivered', 'issued'])
-      .gte('delivery_date', start)
-      .lte('delivery_date', end)
+      .gte('delivery_date', periodStart)
+      .lte('delivery_date', periodEnd)
       .eq('user_id', DEMO_USER_ID)
       .order('delivery_date', { ascending: true })
 
@@ -2366,8 +2978,7 @@ api.post('/invoices/batch-create', async (c) => {
     const totalAmount = subtotal + totalTax
     
     // 請求番号を生成
-    const now = new Date()
-    const invoiceDate = now.toISOString().split('T')[0]
+    const invoiceDate = issueDate
     const { data: invoiceNo, error: invoiceNoError } = await supabase.rpc('next_document_no', {
       doc_type: 'invoice',
       doc_date: invoiceDate
@@ -2376,11 +2987,11 @@ api.post('/invoices/batch-create', async (c) => {
     if (invoiceNoError) return handleSupabaseError(c, invoiceNoError, 'invoices rpc next-no (batch-create)')
     
     // 支払期限を計算
-    const paymentDay = client.payment_day || null
-    let paymentDueDate = null
-    if (paymentDay) {
-      const dueDate = new Date(now.getFullYear(), now.getMonth() + 1, parseInt(paymentDay) || 1)
-      paymentDueDate = dueDate.toISOString().split('T')[0]
+    const paymentDay = client.payment_day || companyInfo?.default_payment_day || null
+    let paymentDueDate: string | null = null
+    const paymentRule = parsePaymentRule(paymentDay)
+    if (paymentRule) {
+      paymentDueDate = calcDueDateFromRule(periodEnd, paymentRule.monthOffset, paymentRule.dueDayRaw)
     }
     
     // 請求書を作成
@@ -2391,9 +3002,10 @@ api.post('/invoices/batch-create', async (c) => {
         invoice_no: invoiceNo,
         invoice_date: invoiceDate,
         client_id: clientId,
-        billing_period_start: start,
-        billing_period_end: end,
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
         payment_due_date: paymentDueDate,
+        bank_account_id: bankAccountIdsForInsert[0] || null,
         subtotal,
         tax_amount: totalTax,
         total_amount: totalAmount,
@@ -2406,6 +3018,18 @@ api.post('/invoices/batch-create', async (c) => {
 
     if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices insert batch-create')
     const invoiceId = invoice?.id
+
+    if (invoiceId && bankAccountIdsForInsert.length > 0) {
+      const rows = bankAccountIdsForInsert.map((bid: string, idx: number) => ({
+        invoice_id: invoiceId,
+        bank_account_id: bid,
+        sort_order: idx + 1
+      }))
+      const { error: bankLinkError } = await supabase
+        .from('invoice_bank_accounts')
+        .insert(rows)
+      if (bankLinkError) return handleSupabaseError(c, bankLinkError, 'invoice_bank_accounts insert batch-create')
+    }
     
     // 明細を追加
     for (let i = 0; i < items.length; i++) {
@@ -2497,7 +3121,16 @@ api.get('/invoices', async (c) => {
     invoice_display_no: row.invoice_no || (row.id ? `INV-${String(row.id).padStart(6, '0')}` : null),
     invoice_number: row.invoice_no || null
   }))
-  return c.json(rows)
+  const invoiceIds = rows.map((row: any) => Number(row.id)).filter((id: number) => Number.isFinite(id))
+  const bankMap = await fetchInvoiceBankAccounts(invoiceIds)
+  const enriched = rows.map((row: any) => {
+    const items = bankMap.get(Number(row.id)) || []
+    return {
+      ...row,
+      bank_account_ids: items.map((item: any) => item.bank_account_id)
+    }
+  })
+  return c.json(enriched)
 })
 
 // 請求書詳細取得
@@ -2530,18 +3163,38 @@ api.get('/invoices/:id', async (c) => {
     // 紐づく納品書も取得
     const { data: deliveries, error: deliveriesError } = await supabase
       .from('deliveries')
-      .select('id, delivery_date, total_amount')
+      .select('id, delivery_no, delivery_date, total_amount')
       .eq('invoice_id', id)
       .eq('user_id', DEMO_USER_ID)
       .order('delivery_date', { ascending: true })
 
     if (deliveriesError) return handleSupabaseError(c, deliveriesError, 'deliveries select invoice-linked')
 
+    const { data: invoiceBankRows, error: invoiceBankError } = await supabase
+      .from('invoice_bank_accounts')
+      .select('bank_account_id')
+      .eq('invoice_id', id)
+      .order('sort_order', { ascending: true })
+    if (invoiceBankError) return handleSupabaseError(c, invoiceBankError, 'invoice_bank_accounts select')
+
+    const bankAccountIds = (invoiceBankRows || []).map((row: any) => row.bank_account_id)
+    const bankAccounts = await fetchBankAccountsForUser()
+    const bankAccountMap = new Map<string, any>()
+    bankAccounts.forEach((account: any, index: number) => {
+      const normalizedId = normalizeBankAccountId(account, index)
+      if (normalizedId) bankAccountMap.set(normalizedId, account)
+    })
+    const selectedBankAccounts = bankAccountIds
+      .map((id: any) => bankAccountMap.get(String(id)))
+      .filter(Boolean)
+
     return c.json({
       ...(invoice || {}),
       client_name: invoice?.clients?.client_name || null,
       closing_day: invoice?.clients?.closing_day || null,
       payment_day: invoice?.clients?.payment_day || null,
+      bank_account_ids: bankAccountIds,
+      bank_accounts: selectedBankAccounts,
       items: items || [],
       deliveries: deliveries || []
     }, 200)
@@ -2575,6 +3228,13 @@ api.post('/invoices', async (c) => {
     totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
   }
   const totalAmount = subtotal + totalTax
+
+  const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
+  if (normalizedBankIds.error) {
+    return c.json({ success: false, error: normalizedBankIds.error }, 400)
+  }
+  const bankAccountIds = normalizedBankIds.ids
+  const bankAccountIdNums = bankAccountIds.map((id: string) => Number(id))
   
   const { data: invoice, error: invoiceError } = await supabase
     .from('invoices')
@@ -2587,6 +3247,7 @@ api.post('/invoices', async (c) => {
       billing_period_end: data.billing_period_end || null,
       closing_date: data.closing_date || null,
       payment_due_date: data.payment_due_date || null,
+      bank_account_id: bankAccountIdNums[0] || null,
       subtotal,
       tax_amount: totalTax,
       total_amount: totalAmount,
@@ -2599,6 +3260,18 @@ api.post('/invoices', async (c) => {
 
   if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices insert')
   const invoiceId = invoice?.id
+
+  if (invoiceId && bankAccountIdNums.length > 0) {
+    const rows = bankAccountIdNums.map((id: number, idx: number) => ({
+      invoice_id: invoiceId,
+      bank_account_id: id,
+      sort_order: idx + 1
+    }))
+    const { error: bankLinkError } = await supabase
+      .from('invoice_bank_accounts')
+      .insert(rows)
+    if (bankLinkError) return handleSupabaseError(c, bankLinkError, 'invoice_bank_accounts insert')
+  }
   
   // 明細を追加
   for (let i = 0; i < data.items.length; i++) {
@@ -2633,7 +3306,7 @@ api.post('/invoices', async (c) => {
     }
   }
   
-  return c.json({ success: true, id: invoiceId, invoice_no: invoiceNo })
+  return c.json({ success: true, id: invoiceId, invoice_no: invoiceNo, bank_account_ids: bankAccountIds })
 })
 
 // 請求書更新
@@ -2650,6 +3323,13 @@ api.put('/invoices/:id', async (c) => {
     totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
   }
   const totalAmount = subtotal + totalTax
+
+  const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
+  if (normalizedBankIds.error) {
+    return c.json({ success: false, error: normalizedBankIds.error }, 400)
+  }
+  const bankAccountIds = normalizedBankIds.ids
+  const bankAccountIdNums = bankAccountIds.map((id: string) => Number(id))
   
   const { error: invoiceError } = await supabase
     .from('invoices')
@@ -2660,6 +3340,7 @@ api.put('/invoices/:id', async (c) => {
       billing_period_end: data.billing_period_end || null,
       closing_date: data.closing_date || null,
       payment_due_date: data.payment_due_date || null,
+      bank_account_id: bankAccountIdNums[0] || null,
       subtotal,
       tax_amount: totalTax,
       total_amount: totalAmount,
@@ -2672,6 +3353,39 @@ api.put('/invoices/:id', async (c) => {
     .eq('user_id', DEMO_USER_ID)
 
   if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices update')
+
+  const { error: bankDeleteError } = await supabase
+    .from('invoice_bank_accounts')
+    .delete()
+    .eq('invoice_id', id)
+  if (bankDeleteError) return handleSupabaseError(c, bankDeleteError, 'invoice_bank_accounts delete')
+  if (bankAccountIdNums.length > 0) {
+    const rows = bankAccountIdNums.map((bid: number, idx: number) => ({
+      invoice_id: Number(id),
+      bank_account_id: bid,
+      sort_order: idx + 1
+    }))
+    const { error: bankInsertError } = await supabase
+      .from('invoice_bank_accounts')
+      .insert(rows)
+    if (bankInsertError) return handleSupabaseError(c, bankInsertError, 'invoice_bank_accounts insert')
+  }
+
+  let savedBankIds: string[] = []
+  if (bankAccountIdNums.length > 0) {
+    const { data: bankRows, error: bankSelectError } = await supabase
+      .from('invoice_bank_accounts')
+      .select('bank_account_id')
+      .eq('invoice_id', id)
+      .order('sort_order', { ascending: true })
+    if (bankSelectError) return handleSupabaseError(c, bankSelectError, 'invoice_bank_accounts select verify')
+    if (!bankRows || bankRows.length === 0) {
+      return handleSupabaseError(c, new Error('invoice_bank_accounts not saved'), 'invoice_bank_accounts verify')
+    }
+    savedBankIds = bankRows.map((row: any) => String(row.bank_account_id))
+  } else {
+    savedBankIds = []
+  }
   
   // 既存の明細を削除
   const { error: deleteError } = await supabase
@@ -2701,7 +3415,7 @@ api.put('/invoices/:id', async (c) => {
     if (itemError) return handleSupabaseError(c, itemError, 'invoice_items insert')
   }
   
-  return c.json({ success: true })
+  return c.json({ success: true, bank_account_ids: savedBankIds })
 })
 
 // ステータスのみ更新

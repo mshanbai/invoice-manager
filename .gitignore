@@ -32,3 +32,7 @@ lerna-debug.log*
 # misc
 .DS_Store
 *.zip
+# --- local backups (do not commit) ---
+smartbill-backup-*.zip
+backup-*.zip
+SmartBill_Backups/

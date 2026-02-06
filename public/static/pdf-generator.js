@@ -283,6 +283,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   function generateInvoiceHTML(data) {
     var companyInfo = data.companyInfo || {};
     var bankInfo = data.bankInfo || {};
+    var bankInfoList = Array.isArray(data.bankInfoList) ? data.bankInfoList.slice(0, 3) : [];
     var clientInfo = data.clientInfo || {};
     
     var logoHtml = '';
@@ -300,12 +301,23 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var honorific = clientInfo.is_individual ? '様' : '御中';
     
     var bankHtml = '';
-    if (bankInfo.bank_name) {
-      bankHtml = '<div class="bank-box"><div class="bank-header">振込先</div><div class="bank-body">';
-      bankHtml += escapeHtml(bankInfo.bank_name) + ' ' + escapeHtml(bankInfo.bank_branch || '') + '<br>';
-      bankHtml += escapeHtml(bankInfo.account_type || '普通') + ' ' + escapeHtml(bankInfo.account_number || '') + '<br>';
-      bankHtml += '口座名義: ' + escapeHtml(bankInfo.account_holder || '');
-      bankHtml += '</div></div>';
+    if (bankInfoList.length === 0 && bankInfo.bank_name) {
+      bankInfoList = [bankInfo];
+    }
+    if (bankInfoList.length > 0) {
+      bankHtml = '<div class="bank-box"><div class="bank-header">振込先</div>';
+      bankInfoList.forEach(function(b, idx) {
+        bankHtml += '<div class="bank-body">';
+        bankHtml += escapeHtml(b.bank_name || '') + ' ' + escapeHtml(b.bank_branch || '') + '<br>';
+        var typeLabel = b.account_type_label || (b.account_type === 'current' ? '当座' : '普通');
+        bankHtml += escapeHtml(typeLabel) + ' ' + escapeHtml(b.account_number || '') + '<br>';
+        bankHtml += '口座名義: ' + escapeHtml(b.account_holder || '');
+        bankHtml += '</div>';
+        if (idx < bankInfoList.length - 1) {
+          bankHtml += '<div style="height:6px;"></div>';
+        }
+      });
+      bankHtml += '</div>';
       bankHtml += '<div class="bank-note">※振込手数料は御社のご負担にてお願い申し上げます。</div>';
     }
     

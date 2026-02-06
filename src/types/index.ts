@@ -19,6 +19,8 @@ export interface CompanyInfo {
   account_type: string;
   account_number: string;
   account_holder: string;
+  default_closing_day?: string;
+  default_payment_day?: string;
 }
 
 export interface Category {

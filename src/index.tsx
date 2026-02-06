@@ -3,8 +3,14 @@ import { cors } from 'hono/cors'
 import { Layout } from './components/Layout'
 import { FabricCalculatorPage } from './features/fabric-calculator'
 import api from './routes/api'
+import { accountTypeCodeToLabel, normalizeAccountTypeToCode } from './utils/bankAccount'
 
 const app = new Hono()
+
+const bankAccountTypeHelpers = `
+  var normalizeAccountTypeToCode = ${normalizeAccountTypeToCode.toString()};
+  var accountTypeCodeToLabel = ${accountTypeCodeToLabel.toString()};
+`
 
 const docHeaderTitleHelpers = `
   function normalizeHeaderText(value) {
@@ -485,8 +491,8 @@ app.get('/company', async (c) => {
                 <select name="account_type"
                   class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500">
                   <option value="">選択してください</option>
-                  <option value="普通">普通</option>
-                  <option value="当座">当座</option>
+                  <option value="ordinary">普通</option>
+                  <option value="current">当座</option>
                 </select>
               </div>
               <div>
@@ -514,9 +520,9 @@ app.get('/company', async (c) => {
                 <i class="fas fa-plus mr-1"></i>口座を追加
               </button>
             </div>
-            <p class="text-xs text-gray-500 mb-3">
+            <p class="text-sm text-gray-500 mb-3">
               <i class="fas fa-info-circle mr-1"></i>
-              複数の振込先がある場合は追加できます。請求書作成時に選択できます。
+              ※振込先は最大5件まで登録できます。請求書にはそのうち最大3件まで表示できます。
             </p>
             <div id="bankAccountsContainer" class="space-y-4">
               {/* 追加口座がここに動的に追加される */}
@@ -651,6 +657,7 @@ app.get('/company', async (c) => {
       </div>
       
       <script dangerouslySetInnerHTML={{__html: `
+        ${bankAccountTypeHelpers}
         var form = document.getElementById('companyForm');
         var bankAccounts = [];
         var defaultBankAccountIndex = -1; // -1 = メイン口座がデフォルト
@@ -739,7 +746,10 @@ app.get('/company', async (c) => {
           
           // 追加口座の描画
           bankAccountsContainer.innerHTML = bankAccounts.map(function(account, index) {
+            var isDefaultAccount = !!(account && (account.is_default ?? account.isDefault));
+            if (isDefaultAccount) return '';
             var isDefault = (index === defaultBankAccountIndex);
+            var accountType = normalizeAccountTypeToCode(account.account_type || account.accountType || account.account_type_label || '') || '';
             return '<div class="bg-gray-50 rounded-lg p-4 border relative' + (isDefault ? ' ring-2 ring-blue-500' : '') + '" data-index="' + index + '">' +
               '<button type="button" class="absolute top-2 right-2 text-red-500 hover:text-red-700 remove-bank-btn" data-index="' + index + '">' +
               '<i class="fas fa-times-circle"></i></button>' +
@@ -751,12 +761,12 @@ app.get('/company', async (c) => {
               '<div><label class="block text-xs font-medium text-gray-600 mb-1">銀行名</label>' +
               '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="bank_name" value="' + (account.bank_name || '') + '" /></div>' +
               '<div><label class="block text-xs font-medium text-gray-600 mb-1">支店名</label>' +
-              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="bank_branch" value="' + (account.bank_branch || '') + '" /></div>' +
+              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="bank_branch" value="' + (account.bank_branch || account.branch_name || '') + '" /></div>' +
               '<div><label class="block text-xs font-medium text-gray-600 mb-1">口座種別</label>' +
               '<select class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="account_type">' +
               '<option value="">選択</option>' +
-              '<option value="普通"' + (account.account_type === '普通' ? ' selected' : '') + '>普通</option>' +
-              '<option value="当座"' + (account.account_type === '当座' ? ' selected' : '') + '>当座</option>' +
+              '<option value="ordinary"' + (accountType === 'ordinary' ? ' selected' : '') + '>普通</option>' +
+              '<option value="current"' + (accountType === 'current' ? ' selected' : '') + '>当座</option>' +
               '</select></div>' +
               '<div><label class="block text-xs font-medium text-gray-600 mb-1">口座番号</label>' +
               '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="account_number" value="' + (account.account_number || '') + '" /></div>' +
@@ -797,6 +807,8 @@ app.get('/company', async (c) => {
               renderBankAccounts();
             });
           });
+
+          if (addBankBtn) addBankBtn.disabled = bankAccounts.length >= 5;
         }
         
         // メイン口座のラジオボタンイベント
@@ -808,6 +820,7 @@ app.get('/company', async (c) => {
         });
         
         addBankBtn.addEventListener('click', function() {
+          if (bankAccounts.length >= 5) return;
           bankAccounts.push({ bank_name: '', bank_branch: '', account_type: '', account_number: '', account_holder: '' });
           renderBankAccounts();
         });
@@ -845,6 +858,10 @@ app.get('/company', async (c) => {
                 }
               }
             });
+
+            var accountTypeValue = normalizeAccountTypeToCode(data.account_type || data.accountType || data.account_type_label || '') || '';
+            var accountTypeInput = form.querySelector('[name="account_type"]');
+            if (accountTypeInput) accountTypeInput.value = accountTypeValue;
             
             // ロゴプレビュー
             if (data.logo_url) {
@@ -861,13 +878,29 @@ app.get('/company', async (c) => {
             }
             
             // 追加口座
-            if (data.bank_accounts) {
+            if (Array.isArray(data.bank_accounts)) {
+              bankAccounts = data.bank_accounts || [];
+            } else if (data.bank_accounts) {
               try {
                 bankAccounts = JSON.parse(data.bank_accounts) || [];
               } catch (e) {
                 bankAccounts = [];
               }
             }
+            bankAccounts = (bankAccounts || []).map(function(account) {
+              var branchName = account.branch_name || account.bank_branch || '';
+              var accountType = normalizeAccountTypeToCode(account.account_type || account.accountType || account.account_type_label || '') || '';
+              var accountHolder = account.account_holder || account.account_name || account.accountName || '';
+              return Object.assign({}, account, {
+                branch_name: branchName,
+                bank_branch: branchName,
+                account_type: accountType,
+                accountType: accountType,
+                account_type_label: account.account_type_label || accountTypeCodeToLabel(accountType),
+                account_holder: accountHolder,
+                account_name: accountHolder,
+              });
+            });
             
             // デフォルト振込先インデックス（-1 = メイン口座がデフォルト）
             defaultBankAccountIndex = (data.default_bank_account_index !== null && data.default_bank_account_index !== undefined) 
@@ -7893,9 +7926,11 @@ app.get('/invoices', async (c) => {
                   <h3 class="font-bold text-gray-700 mb-3">
                     <i class="fas fa-university mr-2 text-blue-600"></i>振込先
                   </h3>
-                  <select id="bankAccountSelect" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 mb-2">
-                    <option value="">振込先を選択...</option>
-                  </select>
+                <div id="bankAccountsEmpty" class="text-sm text-gray-600">
+                  振込先が登録されていません
+                  <div class="mt-1 text-xs text-gray-500">※最大3件まで選択できます</div>
+                </div>
+                <div id="bankAccountsOptions" class="mt-3 space-y-2"></div>
                   <div id="bankAccountPreview" class="text-sm text-gray-600 hidden p-2 bg-white rounded">
                   </div>
                   <input type="hidden" name="bank_info" id="bankInfoInput" />
@@ -8044,6 +8079,7 @@ app.get('/invoices', async (c) => {
 
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
+        ${bankAccountTypeHelpers}
         // 状態管理
         var currentInvoiceId = null;
         var originalInvoiceStatus = null;
@@ -8053,6 +8089,8 @@ app.get('/invoices', async (c) => {
         var formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
         var selectedClient = null;
         var bankAccounts = [];
+        var selectedBankAccountIds = [];
+        var companyDefaults = { closing_day: '', payment_day: '' };
         var selectedDeliveryIds = [];
         var lastSelectedClientId = localStorage.getItem('lastSelectedClientId');
         var currentHeaderMode = null;
@@ -8084,6 +8122,379 @@ app.get('/invoices', async (c) => {
           });
           if (!titleText) return;
           titleEl.innerHTML = (currentHeaderIconHtml || '') + titleText;
+        }
+
+        function normalizeToYYYYMM(input) {
+          var s = String(input === undefined || input === null ? '' : input).trim();
+
+          function isDigits(str) {
+            if (!str || str.length === 0) return false;
+            for (var i = 0; i < str.length; i++) {
+              var code = str.charCodeAt(i);
+              if (code < 48 || code > 57) return false;
+            }
+            return true;
+          }
+
+          function isValidMM(mm) {
+            if (!isDigits(mm) || mm.length !== 2) return false;
+            var n = Number(mm);
+            return n >= 1 && n <= 12;
+          }
+
+          // YYYY-MM
+          if (s.length === 7 && s.charAt(4) === '-' && isDigits(s.slice(0, 4)) && isValidMM(s.slice(5, 7))) {
+            return s;
+          }
+
+          // YYYY/MM -> YYYY-MM（※正規表現を使わない）
+          if (s.length === 7 && s.charAt(4) === '/' && isDigits(s.slice(0, 4)) && isValidMM(s.slice(5, 7))) {
+            return s.slice(0, 4) + '-' + s.slice(5, 7);
+          }
+
+          // YYYY-MM-DD... -> YYYY-MM
+          if (s.length >= 10 && s.charAt(4) === '-' && s.charAt(7) === '-' && isDigits(s.slice(0, 4)) && isValidMM(s.slice(5, 7))) {
+            return s.slice(0, 7);
+          }
+
+          // YYYY/MM/DD... -> YYYY-MM（※正規表現を使わない）
+          if (s.length >= 10 && s.charAt(4) === '/' && s.charAt(7) === '/' && isDigits(s.slice(0, 4)) && isValidMM(s.slice(5, 7))) {
+            return s.slice(0, 4) + '-' + s.slice(5, 7);
+          }
+
+          // 2026年2月 -> YYYY-MM（スラッシュを含まない正規表現なので安全）
+          var jp = /^(\d{4})年(\d{1,2})月/.exec(s);
+          if (jp) {
+            var y = jp[1];
+            var mRaw = String(jp[2]);
+            var m = mRaw.length === 1 ? '0' + mRaw : mRaw;
+            if (isValidMM(m)) return y + '-' + m;
+          }
+
+          return '';
+        }
+
+        function parseYYYYMM(yyyyMm) {
+          var normalized = normalizeToYYYYMM(yyyyMm);
+          var m = /^(\d{4})-(\d{2})$/.exec(normalized);
+          if (!m) {
+            return null;
+          }
+
+          var year = Number(m[1]);
+          var month = Number(m[2]);
+
+          if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+            return null;
+          }
+
+          return { year: year, month: month, yyyyMm: normalized };
+        }
+
+        function toISODate(d) {
+          return d.toISOString().slice(0, 10);
+        }
+
+        function lastDayOfMonthUTC(year, month1to12) {
+          return new Date(Date.UTC(year, month1to12, 0));
+        }
+
+        function addDaysUTC(isoDate, days) {
+          var d = new Date(isoDate + 'T00:00:00.000Z');
+          d.setUTCDate(d.getUTCDate() + days);
+          return toISODate(d);
+        }
+
+        function clampDayToMonthEndUTC(year, month1to12, day) {
+          var end = lastDayOfMonthUTC(year, month1to12);
+          var endDay = end.getUTCDate();
+          return Math.min(Math.max(1, day), endDay);
+        }
+
+        function normalizeClosingDay(closingDay) {
+          if (closingDay === undefined || closingDay === null || closingDay === '') return null;
+          if (closingDay === 'eom' || closingDay === '末') return 'eom';
+          var n = Number(closingDay);
+          if (!Number.isFinite(n)) return null;
+          if (n === 0 || n === 31) return 'eom';
+          return n;
+        }
+
+        function calcBillingPeriodFromClosing(yyyyMm, closingDayRaw) {
+          var parsed = parseYYYYMM(yyyyMm);
+          if (!parsed) return null;
+          var year = parsed.year;
+          var month = parsed.month;
+          var closingDay = normalizeClosingDay(closingDayRaw);
+
+          if (closingDay === 'eom' || closingDay === null) {
+            var start = new Date(Date.UTC(year, month - 1, 1));
+            var end = lastDayOfMonthUTC(year, month);
+            var startDate = toISODate(start);
+            var endDate = toISODate(end);
+            var issueDate = addDaysUTC(endDate, 1);
+            return { periodStart: startDate, periodEnd: endDate, issueDate: issueDate };
+          }
+
+          var endDay = clampDayToMonthEndUTC(year, month, closingDay);
+          var periodEnd = toISODate(new Date(Date.UTC(year, month - 1, endDay)));
+
+          var prev = { year: month === 1 ? year - 1 : year, month: month === 1 ? 12 : month - 1 };
+          var prevEndDay = clampDayToMonthEndUTC(prev.year, prev.month, closingDay);
+          var prevPeriodEnd = toISODate(new Date(Date.UTC(prev.year, prev.month - 1, prevEndDay)));
+          var periodStart = addDaysUTC(prevPeriodEnd, 1);
+
+          var issueDate = addDaysUTC(periodEnd, 1);
+          return { periodStart: periodStart, periodEnd: periodEnd, issueDate: issueDate };
+        }
+
+        function normalizeDueDay(dueDayRaw) {
+          if (dueDayRaw === undefined || dueDayRaw === null || dueDayRaw === '') return null;
+          if (dueDayRaw === 'eom' || dueDayRaw === '末') return 'eom';
+          var n = Number(dueDayRaw);
+          if (!Number.isFinite(n)) return null;
+          if (n === 0 || n === 31) return 'eom';
+          return n;
+        }
+
+        function parsePaymentRule(paymentDayRaw) {
+          if (paymentDayRaw === undefined || paymentDayRaw === null || paymentDayRaw === '') return null;
+          var value = String(paymentDayRaw || '').trim();
+          if (!value) return null;
+          var monthOffset = 1;
+          if (value.includes('翌々月')) {
+            monthOffset = 2;
+          } else if (value.includes('翌月')) {
+            monthOffset = 1;
+          } else if (value.includes('当月')) {
+            monthOffset = 0;
+          }
+          var dueDayRaw = null;
+          if (value.includes('末')) {
+            dueDayRaw = 'eom';
+          } else {
+            var m = value.match(/(\d{1,2})/);
+            if (m) dueDayRaw = Number(m[1]);
+          }
+          return { monthOffset: monthOffset, dueDayRaw: dueDayRaw };
+        }
+
+        function calcDueDateFromRule(periodEndISO, monthOffsetRaw, dueDayRaw) {
+          var monthOffset = Number(monthOffsetRaw || 0);
+          var dueDay = normalizeDueDay(dueDayRaw);
+
+          var base = new Date(periodEndISO + 'T00:00:00.000Z');
+          var y = base.getUTCFullYear();
+          var m = base.getUTCMonth() + 1;
+
+          var payMonthFirst = new Date(Date.UTC(y, m - 1, 1));
+          payMonthFirst.setUTCMonth(payMonthFirst.getUTCMonth() + monthOffset);
+
+          var payYear = payMonthFirst.getUTCFullYear();
+          var payMonth = payMonthFirst.getUTCMonth() + 1;
+
+          if (dueDay === 'eom' || dueDay === null) {
+            return toISODate(lastDayOfMonthUTC(payYear, payMonth));
+          }
+
+          var d = clampDayToMonthEndUTC(payYear, payMonth, dueDay);
+          return toISODate(new Date(Date.UTC(payYear, payMonth - 1, d)));
+        }
+
+        function formatClosingDayDisplay(closingDay) {
+          if (closingDay === undefined || closingDay === null || closingDay === '') return '末';
+          if (closingDay === '末' || closingDay === 'eom') return '末';
+          var n = Number(closingDay);
+          if (!Number.isFinite(n) || n === 0 || n === 31) return '末';
+          return n;
+        }
+
+        function normalizeBankAccountId(value) {
+          if (value === undefined || value === null) return null;
+          if (typeof value === 'object') {
+            if (value.id !== undefined && value.id !== null) return normalizeBankAccountId(value.id);
+            if (value.bank_account_id !== undefined && value.bank_account_id !== null) return normalizeBankAccountId(value.bank_account_id);
+            if (value.bankAccountId !== undefined && value.bankAccountId !== null) return normalizeBankAccountId(value.bankAccountId);
+            if (value._id !== undefined && value._id !== null) return normalizeBankAccountId(value._id);
+            return null;
+          }
+          var id = String(value).trim();
+          return id ? id : null;
+        }
+
+        function normalizeBankAccounts(list) {
+          var result = (list || []).map(function(account) {
+            var id = normalizeBankAccountId(account);
+            return Object.assign({}, account, { _id: id });
+          }).filter(function(account) {
+            return account._id !== null;
+          });
+          return result;
+        }
+
+        function uniqueBankAccounts(list) {
+          var seen = {};
+          var result = [];
+          (list || []).forEach(function(account) {
+            var id = account && account._id ? String(account._id) : '';
+            if (!id || seen[id]) return;
+            seen[id] = true;
+            result.push(account);
+          });
+          return result;
+        }
+
+        function buildBankAccountLabel(account) {
+          var name = account.bank_name || account.bankName || '';
+          var branch = account.bank_branch || account.branch_name || account.branchName || '';
+          var type = account.account_type_label || account.accountTypeLabel || accountTypeCodeToLabel(account.account_type || account.accountType || account.account_type_label || '');
+          var number = account.account_number || account.accountNumber || '';
+          var holder = account.account_name || account.accountName || account.account_holder || account.accountHolder || '';
+          var line1 = [name, branch].filter(Boolean).join(' ');
+          var line2 = [type, number].filter(Boolean).join(' ');
+          var line3 = holder ? ('名義: ' + holder) : '';
+          return [line1, line2, line3].filter(Boolean).join(' / ');
+        }
+
+        function buildBankInfoText(accounts) {
+          if (!accounts || accounts.length === 0) return '';
+          return accounts.map(function(account) {
+            var name = account.bank_name || account.bankName || '';
+            var branch = account.bank_branch || account.branch_name || account.branchName || '';
+            var type = account.account_type_label || account.accountTypeLabel || accountTypeCodeToLabel(account.account_type || account.accountType || account.account_type_label || '');
+            var number = account.account_number || account.accountNumber || '';
+            var holder = account.account_name || account.accountName || account.account_holder || account.accountHolder || '';
+            var lines = [];
+            if (name || branch) lines.push([name, branch].filter(Boolean).join(' '));
+            lines.push([type, number].filter(Boolean).join(' '));
+            if (holder) lines.push('名義: ' + holder);
+            return lines.join('\\n');
+          }).join('\\n\\n');
+        }
+
+        function getSelectedBankAccounts() {
+          var idSet = {};
+          normalizeBankAccountIds(selectedBankAccountIds).forEach(function(id) { idSet[String(id)] = true; });
+          return bankAccounts.filter(function(account) {
+            var bid = String(account && account._id ? account._id : '');
+            return bid && idSet[bid];
+          });
+        }
+
+        function updateBankAccountPreview() {
+          var preview = document.getElementById('bankAccountPreview');
+          var hidden = document.getElementById('bankInfoInput');
+          var selected = getSelectedBankAccounts();
+          var text = buildBankInfoText(selected);
+          hidden.value = text;
+          if (text) {
+            preview.innerHTML = text.replace(/\\n\\n/g, '<br><br>').replace(/\\n/g, '<br>');
+            preview.classList.remove('hidden');
+          } else {
+            preview.innerHTML = '';
+            preview.classList.add('hidden');
+          }
+        }
+
+        function updateBankAccountCheckboxState() {
+          var list = document.getElementById('bankAccountsOptions') || document.getElementById('bankAccountList');
+          if (!list) return;
+          var count = normalizeBankAccountIds(selectedBankAccountIds).length;
+          list.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+            var id = cb.getAttribute('data-id');
+            var isChecked = selectedBankAccountIds.indexOf(id) !== -1;
+            cb.checked = isChecked;
+            cb.disabled = !isChecked && count >= 3;
+          });
+        }
+
+        function escapeHtml(str) {
+          return String(str === undefined || str === null ? '' : str)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+        }
+
+        function renderBankAccountOptions(list) {
+          var container = document.getElementById('bankAccountsOptions') || document.getElementById('bankAccountList');
+          var emptyEl = document.getElementById('bankAccountsEmpty');
+          console.log('[UI] bankAccounts container=', container);
+          if (!container) {
+            console.warn('[UI] #bankAccountsOptions not found -> HTML側に描画先がない/ID不一致');
+            return;
+          }
+          var arr = Array.isArray(list) ? list : (Array.isArray(bankAccounts) ? bankAccounts : []);
+          if (arr.length === 0) {
+            container.innerHTML = '';
+            if (emptyEl) emptyEl.classList.remove('hidden');
+            return;
+          }
+          if (emptyEl) emptyEl.classList.add('hidden');
+          container.innerHTML = arr.map(function(account) {
+            var id = account && (account.id ?? account.bank_account_id ?? account.bankAccountId);
+            if (id === undefined || id === null || String(id).trim() === '') return '';
+            var label = buildBankAccountLabel(account);
+            var isDefault = !!(account.is_default ?? account.isDefault);
+            var badge = isDefault
+              ? '<span class="ml-2 inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">既定</span>'
+              : '';
+            return '<label class="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 hover:bg-slate-50">' +
+              '<input type="checkbox" class="bank-account-check h-4 w-4" data-id="' + escapeHtml(id) + '">' +
+              '<div class="min-w-0">' +
+              '<div class="flex items-center">' +
+              '<div class="truncate text-sm font-medium text-slate-900">' + escapeHtml(label) + '</div>' +
+              badge +
+              '</div>' +
+              '</div>' +
+              '</label>';
+          }).join('');
+          console.log('[UI] rendered bank accounts options count=', arr.length);
+
+          container.querySelectorAll('.bank-account-check').forEach(function(cb) {
+            cb.addEventListener('change', function() {
+              var id = this.getAttribute('data-id');
+              if (this.checked) {
+                if (normalizeBankAccountIds(selectedBankAccountIds).length >= 3) {
+                  alert('振込先は最大3件まで選択できます');
+                  this.checked = false;
+                  return;
+                }
+                if (selectedBankAccountIds.indexOf(id) === -1) {
+                  selectedBankAccountIds.push(id);
+                }
+              } else {
+                selectedBankAccountIds = selectedBankAccountIds.filter(function(x) { return x !== id; });
+              }
+              updateBankAccountCheckboxState();
+              updateBankAccountPreview();
+              formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+            });
+          });
+
+          updateBankAccountCheckboxState();
+          updateBankAccountPreview();
+        }
+
+        function applyDefaultBankAccountSelection() {
+          if (!bankAccounts || bankAccounts.length === 0) return;
+          if (selectedBankAccountIds.length > 0) return;
+          selectedBankAccountIds = normalizeBankAccountIds([bankAccounts[0]._id || '']);
+          updateBankAccountCheckboxState();
+          updateBankAccountPreview();
+        }
+
+        function getDefaultBankAccountIds() {
+          if (!bankAccounts || bankAccounts.length === 0) return [];
+          return normalizeBankAccountIds(bankAccounts.slice(0, 3).map(function(account) { return account._id; }));
+        }
+
+        function normalizeBankAccountIds(ids) {
+          if (!Array.isArray(ids)) return [];
+          return ids.map(function(id) { return normalizeBankAccountId(id); })
+            .filter(function(id) { return id !== null; })
+            .slice(0, 3);
         }
         
         // 初期化
@@ -8170,36 +8581,63 @@ app.get('/invoices', async (c) => {
         }
         
         async function loadCompanyBankAccounts() {
-          var res = await axios.get('/api/company');
-          var company = res.data;
+          var companyRes = await axios.get('/api/company');
+          var company = companyRes.data;
+          var bankList = [];
+          try {
+            var bankRes = await axios.get('/api/bank-accounts');
+            console.log('[UI] bank-accounts raw=', bankRes.data);
+            var resData = bankRes.data;
+            bankList = Array.isArray(resData) ? resData : (resData && (resData.bank_accounts || resData.data) ? (resData.bank_accounts || resData.data) : []);
+          } catch (e) {
+            console.error(e);
+            bankList = [];
+          }
+
           bankAccounts = [];
-          
-          // 基本の銀行口座
-          if (company.bank_name) {
-            bankAccounts.push({
-              bank_name: company.bank_name,
-              bank_branch: company.bank_branch,
-              account_type: company.account_type,
-              account_number: company.account_number,
-              account_holder: company.account_holder
-            });
-          }
-          
-          // 追加の銀行口座
-          if (company.bank_accounts) {
-            try {
-              var additional = JSON.parse(company.bank_accounts);
-              if (Array.isArray(additional)) {
-                bankAccounts = bankAccounts.concat(additional);
+          companyDefaults.closing_day = company.default_closing_day || '';
+          companyDefaults.payment_day = company.default_payment_day || '';
+
+          if (Array.isArray(bankList) && bankList.length > 0) {
+            console.log('[UI] bankAccounts length=', bankList.length);
+            bankAccounts = uniqueBankAccounts(normalizeBankAccounts(bankList));
+          } else {
+            var companyBankAccounts =
+              (company && Array.isArray(company.bank_accounts_list) && company.bank_accounts_list) ||
+              (company && Array.isArray(company.bank_accounts) && company.bank_accounts) ||
+              (company && Array.isArray(company.bankAccounts) && company.bankAccounts) ||
+              [];
+            if (companyBankAccounts.length > 0) {
+              console.log('[UI] bankAccounts length=', companyBankAccounts.length);
+              bankAccounts = uniqueBankAccounts(normalizeBankAccounts(companyBankAccounts));
+            } else {
+              // 基本の銀行口座
+              if (company.bank_name) {
+                bankAccounts.push({
+                  bank_name: company.bank_name,
+                  bank_branch: company.bank_branch || company.branch_name,
+                  account_type: company.account_type,
+                  account_number: company.account_number,
+                  account_holder: company.account_holder
+                });
               }
-            } catch (e) {}
+              
+              // 追加の銀行口座
+              if (company.bank_accounts) {
+                try {
+                  var additional = JSON.parse(company.bank_accounts);
+                  if (Array.isArray(additional)) {
+                    bankAccounts = bankAccounts.concat(additional);
+                  }
+                } catch (e) {}
+              }
+              bankAccounts = uniqueBankAccounts(normalizeBankAccounts(bankAccounts));
+              console.log('[UI] bankAccounts length=', bankAccounts.length);
+            }
           }
-          
-          var select = document.getElementById('bankAccountSelect');
-          select.innerHTML = '<option value="">振込先を選択...</option>' +
-            bankAccounts.map(function(b, i) {
-              return '<option value="' + i + '">' + b.bank_name + ' ' + b.bank_branch + ' ' + (b.account_type || '普通') + ' ' + b.account_number + '</option>';
-            }).join('');
+
+          renderBankAccountOptions(bankAccounts);
+          applyDefaultBankAccountSelection();
         }
         
         // 得意先サジェスト機能
@@ -8298,39 +8736,49 @@ app.get('/invoices', async (c) => {
           
           var closingInfo = document.getElementById('clientClosingInfo');
           var paymentInfo = document.getElementById('clientPaymentInfo');
-          closingInfo.innerHTML = '<i class="fas fa-calendar text-blue-600 mr-1"></i>締日: ' + (selectedClient.closing_day || '末') + '日';
-          paymentInfo.innerHTML = '<i class="fas fa-yen-sign text-green-600 mr-1"></i>支払: ' + (selectedClient.payment_day || '未設定');
+          var resolvedClosingDay = selectedClient.closing_day || companyDefaults.closing_day || '';
+          var resolvedPaymentDay = selectedClient.payment_day || companyDefaults.payment_day || '';
+          var closingDisplay = formatClosingDayDisplay(resolvedClosingDay);
+          closingInfo.innerHTML = '<i class="fas fa-calendar text-blue-600 mr-1"></i>締日: ' + closingDisplay + '日';
+          paymentInfo.innerHTML = '<i class="fas fa-yen-sign text-green-600 mr-1"></i>支払: ' + (resolvedPaymentDay || '未設定');
           
-          // 支払期限を自動設定
-          if (selectedClient.payment_day) {
+          var invoiceDateInput = document.querySelector('[name="invoice_date"]');
+          var dueDateInput = document.querySelector('[name="payment_due_date"]');
+          var periodStartInput = document.querySelector('[name="billing_period_start"]');
+          var periodEndInput = document.querySelector('[name="billing_period_end"]');
+          var shouldAutoFill = !currentInvoiceId ||
+            ((invoiceDateInput && !invoiceDateInput.value) &&
+             (dueDateInput && !dueDateInput.value) &&
+             (periodStartInput && !periodStartInput.value) &&
+             (periodEndInput && !periodEndInput.value));
+          
+          try {
             var today = new Date();
-            var dueDate = new Date(today.getFullYear(), today.getMonth() + 1, parseInt(selectedClient.payment_day) || 1);
-            document.querySelector('[name="payment_due_date"]').value = dueDate.toISOString().split('T')[0];
-          }
-          
-          // 請求日を締め日の翌日に設定（新規作成時のみ）
-          if (!currentInvoiceId) {
-            var closingDay = selectedClient.closing_day;
-            var now = new Date();
-            var invoiceDate;
-            
-            if (closingDay === '末' || closingDay === '31' || !closingDay) {
-              // 末締めの場合は翌月1日
-              invoiceDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-            } else {
-              var closingDayNum = parseInt(closingDay) || 31;
-              // 締め日の翌日
-              // 現在が締め日より後なら今月の締め日翌日、前なら先月の締め日翌日
-              if (now.getDate() > closingDayNum) {
-                // 今月の締め日翌日
-                invoiceDate = new Date(now.getFullYear(), now.getMonth(), closingDayNum + 1);
-              } else {
-                // 先月の締め日翌日（今月になる場合もある）
-                var lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, closingDayNum + 1);
-                invoiceDate = lastMonth;
-              }
+            var targetMonth = today.toISOString().slice(0, 7);
+            var billing = calcBillingPeriodFromClosing(targetMonth, resolvedClosingDay);
+            if (!billing) {
+              updateFormHeaderTitle();
+              return;
             }
-            document.querySelector('[name="invoice_date"]').value = invoiceDate.toISOString().split('T')[0];
+            
+            if (periodStartInput && (shouldAutoFill || !periodStartInput.value)) {
+              periodStartInput.value = billing.periodStart;
+            }
+            if (periodEndInput && (shouldAutoFill || !periodEndInput.value)) {
+              periodEndInput.value = billing.periodEnd;
+            }
+            if (invoiceDateInput && (shouldAutoFill || !invoiceDateInput.value)) {
+              invoiceDateInput.value = billing.issueDate;
+            }
+            
+            var paymentRule = parsePaymentRule(resolvedPaymentDay);
+            if (paymentRule && dueDateInput && (shouldAutoFill || !dueDateInput.value)) {
+              dueDateInput.value = calcDueDateFromRule(billing.periodEnd, paymentRule.monthOffset, paymentRule.dueDayRaw);
+            } else if (!paymentRule && dueDateInput && shouldAutoFill) {
+              dueDateInput.value = '';
+            }
+          } catch (e) {
+            console.error(e);
           }
           updateFormHeaderTitle();
         }
@@ -8616,8 +9064,9 @@ app.get('/invoices', async (c) => {
           document.getElementById('deliveriesSection').classList.add('hidden');
           document.getElementById('deliveriesList').innerHTML = '<p class="text-sm text-gray-500">得意先を選択して「納品書を取得」をクリックしてください</p>';
           document.getElementById('selectedDeliveriesInfo').classList.add('hidden');
-          document.getElementById('bankAccountSelect').value = '';
-          document.getElementById('bankAccountPreview').classList.add('hidden');
+          selectedBankAccountIds = [];
+          updateBankAccountCheckboxState();
+          updateBankAccountPreview();
           
           updateFormHeaderTitle();
         }
@@ -8628,6 +9077,7 @@ app.get('/invoices', async (c) => {
           
           setFormHeaderMode('new', '<i class="fas fa-file-invoice-dollar mr-2 text-indigo-600"></i>');
           resetInvoiceFormState();
+          applyDefaultBankAccountSelection();
           
           // 今日の日付
           var today = new Date().toISOString().split('T')[0];
@@ -8704,11 +9154,17 @@ app.get('/invoices', async (c) => {
           }
           
           // 振込先
-          if (data.bank_info) {
-            document.getElementById('bankInfoInput').value = data.bank_info;
-            document.getElementById('bankAccountPreview').innerHTML = data.bank_info.replace(/\\n/g, '<br>');
-            document.getElementById('bankAccountPreview').classList.remove('hidden');
+          selectedBankAccountIds = [];
+          if (Array.isArray(data.bank_account_ids) && data.bank_account_ids.length > 0) {
+            selectedBankAccountIds = data.bank_account_ids.map(function(id) { return String(id); });
+          } else if (data.bank_account_id) {
+            selectedBankAccountIds = [String(data.bank_account_id)];
+          } else if (bankAccounts.length > 0) {
+            selectedBankAccountIds = [String(bankAccounts[0]._id || '')];
           }
+          renderBankAccountOptions(bankAccounts);
+          updateBankAccountCheckboxState();
+          updateBankAccountPreview();
           
           // 紐づく納品書を表示
           if (data.deliveries && data.deliveries.length > 0) {
@@ -8761,13 +9217,19 @@ app.get('/invoices', async (c) => {
             billing_period_end: formData.get('billing_period_end') || null,
             notes: formData.get('notes') || '',
             bank_info: formData.get('bank_info') || '',
+            bank_account_ids: selectedBankAccountIds.slice(0, 3),
             items: validItems,
             delivery_ids: selectedDeliveryIds
           };
           
           try {
             if (currentInvoiceId) {
-              await axios.put('/api/invoices/' + currentInvoiceId, data);
+              var updateRes = await axios.put('/api/invoices/' + currentInvoiceId, data);
+              if (updateRes && updateRes.data && Array.isArray(updateRes.data.bank_account_ids) && updateRes.data.bank_account_ids.length > 0) {
+                selectedBankAccountIds = normalizeBankAccountIds(updateRes.data.bank_account_ids);
+                updateBankAccountCheckboxState();
+                updateBankAccountPreview();
+              }
             } else {
               var res = await axios.post('/api/invoices', data);
               currentInvoiceId = res.data.id;
@@ -8816,38 +9278,42 @@ app.get('/invoices', async (c) => {
             var companyRes = await axios.get('/api/company');
             var companyInfo = companyRes.data;
             
-            // デフォルト振込先情報を取得
-            var bankInfo = {};
-            var defaultIndex = companyInfo.default_bank_account_index;
-            
-            if (defaultIndex === -1 || defaultIndex === null || defaultIndex === undefined) {
-              // メイン口座
-              bankInfo = {
-                bank_name: companyInfo.bank_name,
-                bank_branch: companyInfo.bank_branch,
-                account_type: companyInfo.account_type,
-                account_number: companyInfo.account_number,
-                account_holder: companyInfo.account_holder
-              };
+            // 振込先情報を取得（最大3件）
+            var bankInfoList = [];
+            if (Array.isArray(invoiceData.bank_accounts) && invoiceData.bank_accounts.length > 0) {
+              bankInfoList = invoiceData.bank_accounts.slice(0, 3);
             } else {
-              // 追加口座
               var bankAccounts = [];
-              try {
-                bankAccounts = JSON.parse(companyInfo.bank_accounts) || [];
-              } catch (e) {}
-              if (bankAccounts[defaultIndex]) {
-                bankInfo = bankAccounts[defaultIndex];
+              if (Array.isArray(companyInfo.bank_accounts_list) && companyInfo.bank_accounts_list.length > 0) {
+                bankAccounts = companyInfo.bank_accounts_list;
               } else {
-                // インデックスが無効な場合はメイン口座を使用
-                bankInfo = {
-                  bank_name: companyInfo.bank_name,
-                  bank_branch: companyInfo.bank_branch,
-                  account_type: companyInfo.account_type,
-                  account_number: companyInfo.account_number,
-                  account_holder: companyInfo.account_holder
-                };
+                if (companyInfo.bank_name) {
+                  bankAccounts.push({
+                    bank_name: companyInfo.bank_name,
+                    bank_branch: companyInfo.bank_branch,
+                    account_type: companyInfo.account_type,
+                    account_number: companyInfo.account_number,
+                    account_holder: companyInfo.account_holder
+                  });
+                }
+                if (companyInfo.bank_accounts) {
+                  try {
+                    bankAccounts = bankAccounts.concat(JSON.parse(companyInfo.bank_accounts) || []);
+                  } catch (e) {}
+                }
+              }
+            if (Array.isArray(invoiceData.bank_account_ids) && invoiceData.bank_account_ids.length > 0) {
+              var idSet = {};
+              normalizeBankAccountIds(invoiceData.bank_account_ids).forEach(function(id) { idSet[String(id)] = true; });
+                bankInfoList = bankAccounts.filter(function(b, idx) {
+                var bid = b && b.id !== undefined && b.id !== null ? String(b.id) : '';
+                return bid && idSet[bid];
+                }).slice(0, 3);
+              } else {
+                bankInfoList = bankAccounts.slice(0, 3);
               }
             }
+            var bankInfo = bankInfoList[0] || {};
             
             // 取引先情報を取得
             var clientInfo = {};
@@ -8874,6 +9340,7 @@ app.get('/invoices', async (c) => {
               notes: invoiceData.notes,
               companyInfo: companyInfo,
               bankInfo: bankInfo,
+              bankInfoList: bankInfoList,
               clientInfo: clientInfo
             };
             
@@ -9046,7 +9513,7 @@ app.get('/invoices', async (c) => {
           
           tbody.innerHTML = batchClientSummary.map(function(c) {
             var checked = batchSelectedClientIds.includes(c.client_id) ? ' checked' : '';
-            var closingDisplay = c.closing_day >= 28 ? '末' : c.closing_day + '日';
+            var closingDisplay = formatClosingDayDisplay(c.closing_day) + '日';
             return '<tr class="hover:bg-gray-50">' +
               '<td class="px-3 py-2 text-center"><input type="checkbox" class="batch-client-check rounded" data-id="' + c.client_id + '"' + checked + ' /></td>' +
               '<td class="px-3 py-2 font-medium text-gray-800">' + c.client_name + '</td>' +
@@ -9147,18 +9614,16 @@ app.get('/invoices', async (c) => {
           
           try {
             var targetMonth = document.getElementById('batchTargetMonth').value;
-            var bankInfo = '';
-            if (bankAccounts.length > 0) {
-              var b = bankAccounts[0];
-              bankInfo = b.bank_name + ' ' + b.bank_branch + '\\n' +
-                (b.account_type || '普通') + ' ' + b.account_number + '\\n' +
-                '名義: ' + (b.account_holder || '');
-            }
+            var bankAccountIds = getDefaultBankAccountIds();
+            var bankInfo = buildBankInfoText(bankAccounts.filter(function(account) {
+              return bankAccountIds.indexOf(String(account._id)) !== -1;
+            }));
             
             var res = await axios.post('/api/invoices/batch-create', {
               client_ids: batchSelectedClientIds,
               target_month: targetMonth,
-              bank_info: bankInfo
+              bank_info: bankInfo,
+              bank_account_ids: bankAccountIds
             });
             
             closeBatchCreateModal();
@@ -9233,18 +9698,16 @@ app.get('/invoices', async (c) => {
           
           try {
             var targetMonth = document.getElementById('batchTargetMonth').value;
-            var bankInfo = '';
-            if (bankAccounts.length > 0) {
-              var b = bankAccounts[0];
-              bankInfo = b.bank_name + ' ' + b.bank_branch + '\\n' +
-                (b.account_type || '普通') + ' ' + b.account_number + '\\n' +
-                '名義: ' + (b.account_holder || '');
-            }
+            var bankAccountIds = getDefaultBankAccountIds();
+            var bankInfo = buildBankInfoText(bankAccounts.filter(function(account) {
+              return bankAccountIds.indexOf(String(account._id)) !== -1;
+            }));
             
             var res = await axios.post('/api/invoices/batch-create', {
               client_ids: [currentDetailClientId],
               target_month: targetMonth,
-              bank_info: bankInfo
+              bank_info: bankInfo,
+              bank_account_ids: bankAccountIds
             });
             
             closeDeliveryDetailModal();
@@ -9259,30 +9722,6 @@ app.get('/invoices', async (c) => {
             alert('請求書の作成に失敗しました');
             console.error(e);
           }
-        }
-        
-        // 振込先選択
-        function onBankAccountChange() {
-          var select = document.getElementById('bankAccountSelect');
-          var preview = document.getElementById('bankAccountPreview');
-          var input = document.getElementById('bankInfoInput');
-          
-          var idx = parseInt(select.value);
-          if (isNaN(idx) || !bankAccounts[idx]) {
-            preview.classList.add('hidden');
-            input.value = '';
-            return;
-          }
-          
-          var b = bankAccounts[idx];
-          var infoText = b.bank_name + ' ' + b.bank_branch + '\\n' +
-            (b.account_type || '普通') + ' ' + b.account_number + '\\n' +
-            '名義: ' + (b.account_holder || '');
-          
-          preview.innerHTML = infoText.replace(/\\n/g, '<br>');
-          preview.classList.remove('hidden');
-          input.value = infoText;
-          formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
         }
         
         // イベント設定
@@ -9386,7 +9825,6 @@ app.get('/invoices', async (c) => {
           document.getElementById('clientSelect').addEventListener('change', function() { onClientChange(); formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true; });
           
           // 振込先
-          document.getElementById('bankAccountSelect').addEventListener('change', onBankAccountChange);
           
           // 納品書取得ボタン（詳細画面用）
           document.getElementById('loadDeliveriesBtn').addEventListener('click', function() {
