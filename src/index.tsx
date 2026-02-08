@@ -311,9 +311,22 @@ app.get('/fabric-calculator', async (c) => {
 // =====================================
 app.get('/company', async (c) => {
   return c.html(
-    <Layout title="自社情報" currentPath="/company">
+    <Layout title="自社情報" currentPath="/company" hideTitle={true}>
+      <div class="sticky top-0 z-50 -mx-4 md:-mx-8 px-4 md:px-8 bg-white border-b mb-6">
+        <div class="flex items-center justify-between py-4">
+          <h2 class="text-2xl font-bold text-gray-800">自社情報</h2>
+          <div class="flex items-center gap-3">
+            <span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>
+            <button id="saveCompanyBtnTop" type="button"
+              class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition-colors">
+              <i class="fas fa-save mr-2"></i>保存
+            </button>
+          </div>
+        </div>
+      </div>
       <div class="bg-white rounded-lg shadow p-6">
-        <form id="companyForm" class="space-y-8">
+        <form id="companyForm" class="space-y-8" data-track-unsaved="true">
+          <input type="hidden" id="bankAccountsDirtyToken" name="bank_accounts_dirty_token" value="" />
           {/* 基本情報 */}
           <div>
             <h3 class="text-lg font-bold mb-4 pb-2 border-b text-gray-800">
@@ -469,8 +482,14 @@ app.get('/company', async (c) => {
           {/* 振込先情報（メイン） */}
           <div id="mainBankSection">
             <h3 class="text-lg font-bold mb-4 pb-2 border-b text-gray-800">
-              <i class="fas fa-university mr-2 text-teal-600"></i>振込先情報（メイン）
+              <i class="fas fa-university mr-2 text-teal-600"></i>振込先情報（請求書用）
+              <span class="ml-2 text-xs text-gray-500 font-semibold">メイン口座</span>
+              <span id="bankAccountsTotalCount" class="ml-2 text-xs text-gray-500 font-semibold">合計：1/5（デフォルト含む）</span>
             </h3>
+            <p class="text-sm text-gray-500 mb-3">
+              <i class="fas fa-info-circle mr-1"></i>
+              ※請求書には、ここに登録した振込先（メイン＋追加）の中から最大3件まで表示できます。
+            </p>
             <div id="mainBankDefaultLabel" class="flex items-center gap-2 mb-3">
               <input type="radio" name="default_bank_account" id="mainBankRadio" value="-1" checked class="w-4 h-4 text-blue-600" />
               <label for="mainBankRadio" class="text-sm font-medium text-blue-600">請求書のデフォルト振込先 <i class="fas fa-check-circle"></i></label>
@@ -501,7 +520,7 @@ app.get('/company', async (c) => {
                   class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
               </div>
               <div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-700 mb-1">口座名義</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">口座名義<span class="ml-2 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600">デフォルト</span></label>
                 <input type="text" name="account_holder" placeholder="例: カ）〇〇〇〇"
                   class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
                 <p class="text-xs text-gray-500 mt-1">カタカナ表記（振込名義）</p>
@@ -514,16 +533,19 @@ app.get('/company', async (c) => {
             <div class="flex items-center justify-between mb-4 pb-2 border-b">
               <h3 class="text-lg font-bold text-gray-800">
                 <i class="fas fa-plus-circle mr-2 text-teal-600"></i>追加の振込先
+                <span id="bankAccountsExtraCount" class="ml-2 text-xs text-gray-500 font-semibold">追加：0件（最大4件）</span>
               </h3>
-              <button type="button" id="addBankBtn"
-                class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded-lg text-sm">
-                <i class="fas fa-plus mr-1"></i>口座を追加
-              </button>
+              <div class="flex items-center gap-2">
+                <p id="bankAccountsLimitNote" class="text-sm text-red-600 hidden">
+                  ※上限に達しています（合計：5/5件）削除すると追加できます。
+                </p>
+                <button type="button" id="addBankBtn"
+                  class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-1.5 rounded-lg text-sm">
+                  <i class="fas fa-plus mr-1"></i>口座を追加
+                </button>
+              </div>
             </div>
-            <p class="text-sm text-gray-500 mb-3">
-              <i class="fas fa-info-circle mr-1"></i>
-              ※振込先は最大5件まで登録できます。請求書にはそのうち最大3件まで表示できます。
-            </p>
+            <div id="draftBankAccountContainer" class="space-y-4"></div>
             <div id="bankAccountsContainer" class="space-y-4">
               {/* 追加口座がここに動的に追加される */}
             </div>
@@ -648,7 +670,7 @@ app.get('/company', async (c) => {
           </div>
 
           <div class="flex justify-end pt-4">
-            <button type="submit"
+            <button id="saveCompanyBtn" type="submit"
               class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition-colors">
               <i class="fas fa-save mr-2"></i>保存
             </button>
@@ -659,6 +681,31 @@ app.get('/company', async (c) => {
       <script dangerouslySetInnerHTML={{__html: `
         ${bankAccountTypeHelpers}
         var form = document.getElementById('companyForm');
+        var saveCompanyBtn = document.getElementById('saveCompanyBtn');
+        var saveCompanyBtnTop = document.getElementById('saveCompanyBtnTop');
+        
+        function syncSaveButtonState() {
+          if (!saveCompanyBtn || !saveCompanyBtnTop) return;
+          saveCompanyBtnTop.disabled = !!saveCompanyBtn.disabled;
+          saveCompanyBtnTop.innerHTML = saveCompanyBtn.innerHTML;
+          saveCompanyBtnTop.className = saveCompanyBtn.className;
+        }
+        
+        if (saveCompanyBtnTop && saveCompanyBtn) {
+          saveCompanyBtnTop.addEventListener('click', function() {
+            saveCompanyBtn.click();
+          });
+          syncSaveButtonState();
+          var saveBtnObserver = new MutationObserver(function() {
+            syncSaveButtonState();
+          });
+          saveBtnObserver.observe(saveCompanyBtn, {
+            attributes: true,
+            childList: true,
+            subtree: true,
+            characterData: true
+          });
+        }
         var bankAccounts = [];
         var defaultBankAccountIndex = -1; // -1 = メイン口座がデフォルト
         
@@ -725,13 +772,120 @@ app.get('/company', async (c) => {
         // 追加口座の管理
         var bankAccountsContainer = document.getElementById('bankAccountsContainer');
         var addBankBtn = document.getElementById('addBankBtn');
+        var draftBankAccountContainer = document.getElementById('draftBankAccountContainer');
+        var bankAccountsDirtyToken = document.getElementById('bankAccountsDirtyToken');
+        var draftBankAccount = null;
+        var mainBankAccountId = null;
+        var mainBankAccountDisplayOrder = null;
+        var selectedDefaultBankAccountId = '';
+        // 直前までデフォルトだった口座を、保存後の1回だけ追加枠先頭に寄せるための一時ID
+        var prevDefaultIdToPromote = null;
+
+        function markBankAccountsDirty() {
+          if (!bankAccountsDirtyToken) return;
+          bankAccountsDirtyToken.value = String(Date.now());
+          bankAccountsDirtyToken.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        function updateBankAccountsLimitUI() {
+          var count = Array.isArray(bankAccounts) ? bankAccounts.length : 0;
+          var totalCount = count + 1;
+          var extraCount = Math.max(totalCount - 1, 0);
+          var totalCountEl = document.getElementById('bankAccountsTotalCount');
+          if (totalCountEl) {
+            totalCountEl.textContent = '合計：' + totalCount + '/5（デフォルト含む）';
+            if (totalCount >= 5) {
+              totalCountEl.classList.add('text-red-600');
+              totalCountEl.classList.remove('text-gray-500');
+            } else {
+              totalCountEl.classList.add('text-gray-500');
+              totalCountEl.classList.remove('text-red-600');
+            }
+          }
+          var extraCountEl = document.getElementById('bankAccountsExtraCount');
+          if (extraCountEl) {
+            extraCountEl.textContent = '追加：' + extraCount + '件（最大4件）';
+          }
+          if (addBankBtn) {
+            var disabled = totalCount >= 5;
+            addBankBtn.disabled = disabled;
+            addBankBtn.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+          }
+          var limitNoteEl = document.getElementById('bankAccountsLimitNote');
+          if (limitNoteEl) {
+            if (totalCount >= 5) {
+              limitNoteEl.textContent = '※上限に達しています（合計：' + totalCount + '/5件）削除すると追加できます。';
+              limitNoteEl.classList.remove('hidden');
+            } else {
+              limitNoteEl.classList.add('hidden');
+            }
+          }
+        }
+        
+        function createEmptyBankAccount() {
+          return { bank_name: '', bank_branch: '', account_type: '', account_number: '', account_holder: '' };
+        }
+        
+        function hasDraftBankAccountValues(account) {
+          if (!account) return false;
+          return ['bank_name', 'bank_branch', 'account_type', 'account_number', 'account_holder'].some(function(key) {
+            var value = account[key];
+            return value !== null && value !== undefined && String(value).trim() !== '';
+          });
+        }
+
+        function escapeHtml(str) {
+          return String(str === undefined || str === null ? '' : str)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+        }
+
+        function toBool(v) {
+          return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+        }
+
+        function getDraftSummaryText(account) {
+          if (!account) return '';
+          var parts = [];
+          var bankName = String(account.bank_name || '').trim();
+          if (bankName) parts.push(bankName);
+          var branchName = String(account.branch_name || account.bank_branch || '').trim();
+          if (branchName) parts.push(branchName);
+          var accountTypeRaw = String(account.account_type || account.accountType || account.account_type_label || '').trim();
+          var accountTypeLabel = accountTypeRaw;
+          if (accountTypeRaw === 'ordinary') accountTypeLabel = '普通';
+          else if (accountTypeRaw === 'current') accountTypeLabel = '当座';
+          if (accountTypeLabel) parts.push(accountTypeLabel);
+          var accountNumber = String(account.account_number || '').trim();
+          if (accountNumber) parts.push(accountNumber);
+          return parts.join(' / ');
+        }
+        
+        function clearDraftBankAccount() {
+          draftBankAccount = null;
+          if (selectedDefaultBankAccountId === 'draft') {
+            selectedDefaultBankAccountId = (mainBankAccountId !== null && mainBankAccountId !== undefined)
+              ? String(mainBankAccountId)
+              : '';
+          }
+          renderDraftBankAccount();
+          renderBankAccounts();
+        }
         
         function renderBankAccounts() {
           // メイン口座のデフォルト表示を更新
           var mainBankSection = document.getElementById('mainBankSection');
           var mainBankRadio = document.getElementById('mainBankRadio');
           var mainBankLabel = document.getElementById('mainBankDefaultLabel');
-          var isMainDefault = (defaultBankAccountIndex === -1);
+          var mainIdStr = (mainBankAccountId !== null && mainBankAccountId !== undefined)
+            ? String(mainBankAccountId)
+            : '';
+          var isMainDefault = selectedDefaultBankAccountId
+            ? selectedDefaultBankAccountId === mainIdStr
+            : (mainIdStr === '');
           
           mainBankRadio.checked = isMainDefault;
           if (isMainDefault) {
@@ -748,14 +902,14 @@ app.get('/company', async (c) => {
           bankAccountsContainer.innerHTML = bankAccounts.map(function(account, index) {
             var isDefaultAccount = !!(account && (account.is_default ?? account.isDefault));
             if (isDefaultAccount) return '';
-            var isDefault = (index === defaultBankAccountIndex);
+            var isDefault = (selectedDefaultBankAccountId === String(account.id));
             var accountType = normalizeAccountTypeToCode(account.account_type || account.accountType || account.account_type_label || '') || '';
             return '<div class="bg-gray-50 rounded-lg p-4 border relative' + (isDefault ? ' ring-2 ring-blue-500' : '') + '" data-index="' + index + '">' +
               '<button type="button" class="absolute top-2 right-2 text-red-500 hover:text-red-700 remove-bank-btn" data-index="' + index + '">' +
               '<i class="fas fa-times-circle"></i></button>' +
               '<div class="flex items-center gap-2 mb-3">' +
-              '<input type="radio" name="default_bank_account" class="default-bank-radio w-4 h-4 text-blue-600" data-index="' + index + '"' + (isDefault ? ' checked' : '') + ' />' +
-              '<label class="text-sm font-medium ' + (isDefault ? 'text-blue-600' : 'text-gray-600') + '">請求書のデフォルト振込先' + (isDefault ? ' <i class="fas fa-check-circle"></i>' : '') + '</label>' +
+              '<input type="radio" name="default_bank_account" class="default-bank-radio w-4 h-4 text-blue-600" value="' + String(account.id || '') + '" data-index="' + index + '"' + (isDefault ? ' checked' : '') + ' />' +
+              '<label class="text-sm font-medium ' + (isDefault ? 'text-blue-600' : 'text-gray-600') + '">デフォルトにする' + (isDefault ? ' <i class="fas fa-check-circle"></i>' : '') + '</label>' +
               '</div>' +
               '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
               '<div><label class="block text-xs font-medium text-gray-600 mb-1">銀行名</label>' +
@@ -779,13 +933,14 @@ app.get('/company', async (c) => {
           bankAccountsContainer.querySelectorAll('.remove-bank-btn').forEach(function(btn) {
             btn.addEventListener('click', function() {
               var index = parseInt(this.getAttribute('data-index'));
+              var removed = bankAccounts[index];
               bankAccounts.splice(index, 1);
-              // デフォルトインデックスの調整
-              if (defaultBankAccountIndex === index) {
-                defaultBankAccountIndex = -1; // メインに戻す
-              } else if (index < defaultBankAccountIndex) {
-                defaultBankAccountIndex--;
+              if (removed && selectedDefaultBankAccountId && String(removed.id) === selectedDefaultBankAccountId) {
+                selectedDefaultBankAccountId = (mainBankAccountId !== null && mainBankAccountId !== undefined)
+                  ? String(mainBankAccountId)
+                  : '';
               }
+              markBankAccountsDirty();
               renderBankAccounts();
             });
           });
@@ -803,26 +958,104 @@ app.get('/company', async (c) => {
           // イベント設定: 追加口座のデフォルト選択ラジオボタン
           bankAccountsContainer.querySelectorAll('.default-bank-radio').forEach(function(radio) {
             radio.addEventListener('change', function() {
-              defaultBankAccountIndex = parseInt(this.getAttribute('data-index'));
+              selectedDefaultBankAccountId = this.value || '';
+              markBankAccountsDirty();
               renderBankAccounts();
+              renderDraftBankAccount();
             });
           });
 
-          if (addBankBtn) addBankBtn.disabled = bankAccounts.length >= 5;
+          updateBankAccountsLimitUI();
+        }
+        
+        function renderDraftBankAccount() {
+          if (!draftBankAccountContainer) return;
+          if (!draftBankAccount) {
+            draftBankAccountContainer.innerHTML = '';
+            return;
+          }
+          
+          var account = draftBankAccount;
+          var isDefault = (selectedDefaultBankAccountId === 'draft');
+          var accountType = normalizeAccountTypeToCode(account.account_type || account.accountType || account.account_type_label || '') || '';
+          draftBankAccountContainer.innerHTML =
+            '<div class="bg-gray-50 rounded-lg p-4 border relative' + (isDefault ? ' ring-2 ring-blue-500' : '') + '" data-index="draft">' +
+              '<button type="button" class="absolute top-2 right-2 text-red-500 hover:text-red-700 remove-bank-btn" data-index="draft">' +
+              '<i class="fas fa-times-circle"></i></button>' +
+              '<div class="flex items-center gap-2 mb-3">' +
+              '<input type="radio" name="default_bank_account" class="default-bank-radio w-4 h-4 text-blue-600" value="draft" data-index="draft"' + (isDefault ? ' checked' : '') + ' />' +
+              '<label class="text-sm font-medium ' + (isDefault ? 'text-blue-600' : 'text-gray-600') + '">デフォルトにする' + (isDefault ? ' <i class="fas fa-check-circle"></i>' : '') + '</label>' +
+              '</div>' +
+              '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+              '<div><label class="block text-xs font-medium text-gray-600 mb-1">銀行名</label>' +
+              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="bank_name" value="' + (account.bank_name || '') + '" /></div>' +
+              '<div><label class="block text-xs font-medium text-gray-600 mb-1">支店名</label>' +
+              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="bank_branch" value="' + (account.bank_branch || account.branch_name || '') + '" /></div>' +
+              '<div><label class="block text-xs font-medium text-gray-600 mb-1">口座種別</label>' +
+              '<select class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="account_type">' +
+              '<option value="">選択</option>' +
+              '<option value="ordinary"' + (accountType === 'ordinary' ? ' selected' : '') + '>普通</option>' +
+              '<option value="current"' + (accountType === 'current' ? ' selected' : '') + '>当座</option>' +
+              '</select></div>' +
+              '<div><label class="block text-xs font-medium text-gray-600 mb-1">口座番号</label>' +
+              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="account_number" value="' + (account.account_number || '') + '" /></div>' +
+              '<div class="md:col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">口座名義</label>' +
+              '<input type="text" class="bank-field w-full border rounded px-2 py-1 text-sm" data-field="account_holder" value="' + (account.account_holder || '') + '" /></div>' +
+              '</div></div>';
+          
+          draftBankAccountContainer.querySelectorAll('.remove-bank-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              markBankAccountsDirty();
+              clearDraftBankAccount();
+            });
+          });
+          
+          draftBankAccountContainer.querySelectorAll('.bank-field').forEach(function(field) {
+            field.addEventListener('change', function() {
+              var fieldName = this.getAttribute('data-field');
+              draftBankAccount[fieldName] = this.value;
+            });
+          });
+          
+          draftBankAccountContainer.querySelectorAll('.default-bank-radio').forEach(function(radio) {
+            radio.addEventListener('change', function() {
+              selectedDefaultBankAccountId = this.value || '';
+              markBankAccountsDirty();
+              renderBankAccounts();
+              renderDraftBankAccount();
+            });
+          });
+        }
+        
+        function focusDraftBankAccount() {
+          if (!draftBankAccountContainer || !draftBankAccount) return;
+          draftBankAccountContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          var firstInput = draftBankAccountContainer.querySelector('input[data-field="bank_name"], input, select, textarea');
+          if (firstInput) firstInput.focus();
         }
         
         // メイン口座のラジオボタンイベント
         document.getElementById('mainBankRadio').addEventListener('change', function() {
           if (this.checked) {
-            defaultBankAccountIndex = -1;
+            selectedDefaultBankAccountId = (mainBankAccountId !== null && mainBankAccountId !== undefined)
+              ? String(mainBankAccountId)
+              : '';
+            markBankAccountsDirty();
             renderBankAccounts();
+            renderDraftBankAccount();
           }
         });
         
         addBankBtn.addEventListener('click', function() {
+          if (draftBankAccount) {
+            focusDraftBankAccount();
+            return;
+          }
           if (bankAccounts.length >= 5) return;
-          bankAccounts.push({ bank_name: '', bank_branch: '', account_type: '', account_number: '', account_holder: '' });
-          renderBankAccounts();
+          draftBankAccount = createEmptyBankAccount();
+          markBankAccountsDirty();
+          renderDraftBankAccount();
+          focusDraftBankAccount();
         });
         
         // 消費税タイプの切り替え
@@ -901,14 +1134,89 @@ app.get('/company', async (c) => {
                 account_name: accountHolder,
               });
             });
+
+            var sortedAccounts = (bankAccounts || []).slice().sort(function(a, b) {
+              var aDefault = toBool((a && (a.is_default ?? a.isDefault)));
+              var bDefault = toBool((b && (b.is_default ?? b.isDefault)));
+              if (aDefault !== bDefault) return aDefault ? -1 : 1;
+              var aOrder = parseInt(a && a.display_order, 10);
+              var bOrder = parseInt(b && b.display_order, 10);
+              if (isNaN(aOrder)) aOrder = 0;
+              if (isNaN(bOrder)) bOrder = 0;
+              if (aOrder !== bOrder) return aOrder - bOrder;
+              var aId = a && a.id;
+              var bId = b && b.id;
+              var aIdNum = parseInt(aId, 10);
+              var bIdNum = parseInt(bId, 10);
+              if (!isNaN(aIdNum) && !isNaN(bIdNum) && aIdNum !== bIdNum) return aIdNum - bIdNum;
+              var aIdStr = String(aId || '');
+              var bIdStr = String(bId || '');
+              if (aIdStr < bIdStr) return -1;
+              if (aIdStr > bIdStr) return 1;
+              return 0;
+            });
+            
+            var defaultAccount = null;
+            var extraAccounts = [];
+            sortedAccounts.forEach(function(account) {
+              if (!defaultAccount && toBool((account && (account.is_default ?? account.isDefault)))) {
+                defaultAccount = account;
+              } else {
+                extraAccounts.push(account);
+              }
+            });
+
+            // --- 方法A: 保存直後の1回だけ、旧デフォルト口座を追加枠先頭に寄せる（表示のみ） ---
+            if (prevDefaultIdToPromote) {
+              var promoteIdx = -1;
+              for (var i = 0; i < extraAccounts.length; i++) {
+                var idNum = Number(extraAccounts[i] && extraAccounts[i].id);
+                if (isFinite(idNum) && idNum === prevDefaultIdToPromote) {
+                  promoteIdx = i;
+                  break;
+                }
+              }
+              if (promoteIdx > 0) {
+                var moved = extraAccounts.splice(promoteIdx, 1)[0];
+                extraAccounts.unshift(moved);
+              }
+              prevDefaultIdToPromote = null;
+            }
+            
+            if (defaultAccount) {
+              var bankNameInput = form.querySelector('[name="bank_name"]');
+              if (bankNameInput) bankNameInput.value = defaultAccount.bank_name || '';
+              var bankBranchInput = form.querySelector('[name="bank_branch"]');
+              if (bankBranchInput) bankBranchInput.value = defaultAccount.bank_branch || defaultAccount.branch_name || '';
+              var accountTypeValueFromDefault = normalizeAccountTypeToCode(defaultAccount.account_type || defaultAccount.accountType || defaultAccount.account_type_label || '') || '';
+              var accountTypeInputFromDefault = form.querySelector('[name="account_type"]');
+              if (accountTypeInputFromDefault) accountTypeInputFromDefault.value = accountTypeValueFromDefault;
+              var accountNumberInput = form.querySelector('[name="account_number"]');
+              if (accountNumberInput) accountNumberInput.value = defaultAccount.account_number || '';
+              var accountHolderInput = form.querySelector('[name="account_holder"]');
+              if (accountHolderInput) accountHolderInput.value = defaultAccount.account_holder || '';
+            }
+
+            mainBankAccountId = defaultAccount ? defaultAccount.id : null;
+            mainBankAccountDisplayOrder = defaultAccount ? defaultAccount.display_order : null;
+            selectedDefaultBankAccountId = (defaultAccount && defaultAccount.id) ? String(defaultAccount.id) : '';
+
+            bankAccounts = extraAccounts;
             
             // デフォルト振込先インデックス（-1 = メイン口座がデフォルト）
-            defaultBankAccountIndex = (data.default_bank_account_index !== null && data.default_bank_account_index !== undefined) 
-              ? data.default_bank_account_index 
-              : -1;
-            // 追加口座が削除されてインデックスが無効になった場合はメインに戻す
-            if (defaultBankAccountIndex >= 0 && defaultBankAccountIndex >= bankAccounts.length) {
+            if (defaultAccount) {
               defaultBankAccountIndex = -1;
+            } else {
+              defaultBankAccountIndex = (data.default_bank_account_index !== null && data.default_bank_account_index !== undefined) 
+                ? data.default_bank_account_index 
+                : -1;
+              // 追加口座が削除されてインデックスが無効になった場合はメインに戻す
+              if (defaultBankAccountIndex >= 0 && defaultBankAccountIndex >= bankAccounts.length) {
+                defaultBankAccountIndex = -1;
+              }
+            }
+            if (!selectedDefaultBankAccountId && defaultBankAccountIndex >= 0 && bankAccounts[defaultBankAccountIndex]) {
+              selectedDefaultBankAccountId = String(bankAccounts[defaultBankAccountIndex].id || '');
             }
             renderBankAccounts();
             
@@ -941,12 +1249,96 @@ app.get('/company', async (c) => {
           e.preventDefault();
           var formData = new FormData(form);
           var data = Object.fromEntries(formData);
+          var didIncludeDraft = !!(draftBankAccount && hasDraftBankAccountValues(draftBankAccount));
+          var draftSummaryText = didIncludeDraft ? escapeHtml(getDraftSummaryText(draftBankAccount)) : '';
           
           // 追加口座を含める
-          data.bank_accounts = bankAccounts;
+          var mainBankAccountPayload = {
+            id: mainBankAccountId,
+            bank_name: data.bank_name || '',
+            bank_branch: data.bank_branch || '',
+            account_type: data.account_type || '',
+            account_number: data.account_number || '',
+            account_holder: data.account_holder || ''
+          };
+          if (mainBankAccountDisplayOrder !== null && mainBankAccountDisplayOrder !== undefined) {
+            mainBankAccountPayload.display_order = mainBankAccountDisplayOrder;
+          }
+          var shouldIncludeMain = (mainBankAccountId !== null && mainBankAccountId !== undefined && mainBankAccountId !== '') ||
+            hasDraftBankAccountValues(mainBankAccountPayload);
           
+          var payloadBankAccounts = [];
+          var pushWithDefaultFlag = function(account, isDefault) {
+            payloadBankAccounts.push(Object.assign({}, account, { is_default: isDefault }));
+          };
+          var effectiveSelectedDefaultId = selectedDefaultBankAccountId;
+          if (
+            !effectiveSelectedDefaultId &&
+            shouldIncludeMain &&
+            mainBankAccountId !== null &&
+            mainBankAccountId !== undefined
+          ) {
+            effectiveSelectedDefaultId = String(mainBankAccountId);
+          }
+          
+          if (effectiveSelectedDefaultId && String(mainBankAccountId) === effectiveSelectedDefaultId) {
+            if (shouldIncludeMain) pushWithDefaultFlag(mainBankAccountPayload, true);
+          } else if (effectiveSelectedDefaultId === 'draft') {
+            if (didIncludeDraft) pushWithDefaultFlag(draftBankAccount, true);
+          } else if (effectiveSelectedDefaultId) {
+            var defaultExtraAccount = bankAccounts.find(function(account) {
+              return String(account && account.id) === effectiveSelectedDefaultId;
+            });
+            if (defaultExtraAccount) pushWithDefaultFlag(defaultExtraAccount, true);
+          }
+          
+          bankAccounts.forEach(function(account, index) {
+            if (effectiveSelectedDefaultId && String(account && account.id) === effectiveSelectedDefaultId) return;
+            pushWithDefaultFlag(account, false);
+          });
+          
+          if (didIncludeDraft && effectiveSelectedDefaultId !== 'draft') {
+            pushWithDefaultFlag(draftBankAccount, false);
+          }
+          
+          if (shouldIncludeMain && effectiveSelectedDefaultId !== String(mainBankAccountId)) {
+            pushWithDefaultFlag(mainBankAccountPayload, false);
+          }
+          
+          data.bank_accounts = payloadBankAccounts;
+          
+          // --- 方法A: デフォルト切替後に旧デフォルトを追加枠先頭に出すため、旧デフォルトIDを一時保持 ---
+          var currentDefaultId = (typeof mainBankAccountId === 'number' && isFinite(mainBankAccountId))
+            ? mainBankAccountId
+            : (mainBankAccountId ? Number(mainBankAccountId) : null);
+          if (
+            currentDefaultId &&
+            isFinite(currentDefaultId) &&
+            selectedDefaultBankAccountId &&
+            selectedDefaultBankAccountId !== String(currentDefaultId)
+          ) {
+            prevDefaultIdToPromote = currentDefaultId;
+          }
+
           // デフォルト振込先インデックス
-          data.default_bank_account_index = defaultBankAccountIndex;
+          var mergedBankAccounts = data.bank_accounts || [];
+          var computedDefaultIndex = -1;
+          var computedDefaultSelectionId = selectedDefaultBankAccountId || effectiveSelectedDefaultId || '';
+          if (computedDefaultSelectionId === 'draft') {
+            if (draftBankAccount && hasDraftBankAccountValues(draftBankAccount)) {
+              computedDefaultIndex = mergedBankAccounts.length - 1;
+            } else {
+              computedDefaultIndex = -1;
+            }
+          } else if (computedDefaultSelectionId) {
+            var selectedIdNum = Number(computedDefaultSelectionId);
+            if (isFinite(selectedIdNum)) {
+              computedDefaultIndex = mergedBankAccounts.findIndex(function(a) {
+                return isFinite(Number(a && a.id)) && Number(a.id) === selectedIdNum;
+              });
+            }
+          }
+          data.default_bank_account_index = computedDefaultIndex;
           
           // 消費税表示設定（チェックボックスの値を明示的に設定）
           data.show_tax_on_estimate_delivery = document.getElementById('showTaxToggle').checked;
@@ -958,7 +1350,15 @@ app.get('/company', async (c) => {
           
           axios.put('/api/company', data).then(function() {
             window.SmartBill.resetFormTracking();
-            window.SmartBill.showSuccessDialog('自社情報を保存しました。');
+            if (didIncludeDraft) {
+              window.SmartBill.showSuccessDialog('自社情報を保存しました。\\n追加した口座：' + draftSummaryText);
+            } else {
+              window.SmartBill.showSuccessDialog('自社情報を保存しました。');
+            }
+            loadCompany().then(function() {
+              clearDraftBankAccount();
+              setTimeout(function() { window.SmartBill.trackFormChanges('companyForm'); }, 100);
+            });
           }).catch(function(e) {
             alert('エラーが発生しました');
             console.error(e);
@@ -1362,11 +1762,12 @@ app.get('/categories', async (c) => {
             '<div class="flex items-center gap-3">' +
             '<button type="button" onclick="window.SmartBill.showShortcutHelp()" class="text-gray-400 hover:text-gray-600 text-sm" title="キーボードショートカット"><i class="fas fa-keyboard"></i></button>' +
             (isNew ? '' : '<button type="button" id="deleteBtn" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors border border-red-200"><i class="fas fa-trash-alt mr-1"></i>削除</button>') +
+            '<span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>' +
             '<button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-lg text-sm transition-colors shadow-sm" title="Ctrl+S / ⌘+S">' +
             '<i class="fas ' + (isNew ? 'fa-plus-circle' : 'fa-save') + ' mr-1"></i>' + (isNew ? '登録' : '保存') + '</button>' +
             '</div></div></div>';
           
-          var formHtml = '<form id="categoryForm" class="space-y-6">' +
+          var formHtml = '<form id="categoryForm" class="space-y-6" data-track-unsaved="true">' +
             headerHtml +
             
             // 基本情報
@@ -1995,11 +2396,12 @@ app.get('/clients', async (c) => {
             '<div class="flex items-center gap-3">' +
             '<button type="button" onclick="window.SmartBill.showShortcutHelp()" class="text-gray-400 hover:text-gray-600 text-sm" title="キーボードショートカット"><i class="fas fa-keyboard"></i></button>' +
             (isNew ? '' : '<button type="button" id="deleteBtn" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors border border-red-200"><i class="fas fa-trash-alt mr-1"></i>削除</button>') +
+            '<span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>' +
             '<button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-lg text-sm transition-colors shadow-sm" title="Ctrl+S / ⌘+S">' +
             '<i class="fas ' + (isNew ? 'fa-plus-circle' : 'fa-save') + ' mr-1"></i>' + (isNew ? '登録' : '保存') + '</button>' +
             '</div></div></div>';
           
-          var formHtml = '<form id="clientForm" class="space-y-6">' +
+          var formHtml = '<form id="clientForm" class="space-y-6" data-track-unsaved="true">' +
             headerHtml +
             
             // 基本情報
@@ -2748,11 +3150,12 @@ app.get('/products', async (c) => {
             '<button type="button" onclick="window.SmartBill.showShortcutHelp()" class="text-gray-400 hover:text-gray-600 text-sm" title="キーボードショートカット"><i class="fas fa-keyboard"></i></button>' +
             (isNew ? '' : '<button type="button" id="duplicateBtn" class="bg-purple-50 hover:bg-purple-100 text-purple-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors border border-purple-200" title="この商品をコピーして新規作成"><i class="fas fa-copy mr-1"></i>複製</button>') +
             (isNew ? '' : '<button type="button" id="deleteBtn" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2 px-4 rounded-lg text-sm transition-colors border border-red-200"><i class="fas fa-trash-alt mr-1"></i>削除</button>') +
+            '<span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>' +
             '<button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded-lg text-sm transition-colors shadow-sm" title="Ctrl+S / ⌘+S">' +
             '<i class="fas ' + (isNew ? 'fa-plus-circle' : 'fa-save') + ' mr-1"></i>' + (isNew ? '登録' : '保存') + '</button>' +
             '</div></div></div>';
           
-          var formHtml = '<form id="productForm" class="space-y-6">' +
+          var formHtml = '<form id="productForm" class="space-y-6" data-track-unsaved="true">' +
             headerHtml +
             
             // 基本情報
@@ -7923,14 +8326,16 @@ app.get('/invoices', async (c) => {
 
                 {/* 振込先 */}
                 <div class="mb-6 p-4 bg-blue-50 rounded-lg">
-                  <h3 class="font-bold text-gray-700 mb-3">
-                    <i class="fas fa-university mr-2 text-blue-600"></i>振込先
+                  <h3 class="font-bold text-gray-700 mb-3 flex items-center justify-between">
+                    <span><i class="fas fa-university mr-2 text-blue-600"></i>振込先</span>
+                    <span id="bankAccountSelectedCount" class="text-xs text-gray-500 font-semibold">振込先：0/3</span>
                   </h3>
-                <div id="bankAccountsEmpty" class="text-sm text-gray-600">
-                  振込先が登録されていません
-                  <div class="mt-1 text-xs text-gray-500">※最大3件まで選択できます</div>
-                </div>
-                <div id="bankAccountsOptions" class="mt-3 space-y-2"></div>
+                  <div id="bankAccountLimitNote" class="text-sm text-red-600 hidden"></div>
+                  <div id="bankAccountsEmpty" class="text-sm text-gray-600">
+                    振込先が登録されていません
+                    <div class="mt-1 text-xs text-gray-500">※最大3件まで選択できます</div>
+                  </div>
+                  <div id="bankAccountsOptions" class="mt-3 space-y-2"></div>
                   <div id="bankAccountPreview" class="text-sm text-gray-600 hidden p-2 bg-white rounded">
                   </div>
                   <input type="hidden" name="bank_info" id="bankInfoInput" />
@@ -8090,6 +8495,8 @@ app.get('/invoices', async (c) => {
         var selectedClient = null;
         var bankAccounts = [];
         var selectedBankAccountIds = [];
+        var BANK_ACCOUNT_SELECT_MAX = 3;
+        var bankAccountLimitNoteMode = '';
         var companyDefaults = { closing_day: '', payment_day: '' };
         var selectedDeliveryIds = [];
         var lastSelectedClientId = localStorage.getItem('lastSelectedClientId');
@@ -8322,6 +8729,21 @@ app.get('/invoices', async (c) => {
           return id ? id : null;
         }
 
+        function normalizeBankAccountIdsAll(ids) {
+          if (!Array.isArray(ids)) return [];
+          var result = [];
+          var seen = {};
+          ids.forEach(function(id) {
+            var normalized = normalizeBankAccountId(id);
+            if (!normalized) return;
+            var key = String(normalized);
+            if (seen[key]) return;
+            seen[key] = true;
+            result.push(key);
+          });
+          return result;
+        }
+
         function normalizeBankAccounts(list) {
           var result = (list || []).map(function(account) {
             var id = normalizeBankAccountId(account);
@@ -8396,16 +8818,56 @@ app.get('/invoices', async (c) => {
           }
         }
 
+        function updateBankAccountSelectionCounter() {
+          var count = normalizeBankAccountIds(selectedBankAccountIds).length;
+          var counterEl = document.getElementById('bankAccountSelectedCount');
+          if (!counterEl) return;
+          counterEl.textContent = '振込先：' + count + '/' + BANK_ACCOUNT_SELECT_MAX;
+        }
+
+        function setBankAccountLimitNote(message, mode) {
+          var noteEl = document.getElementById('bankAccountLimitNote');
+          bankAccountLimitNoteMode = mode || '';
+          if (!noteEl) return;
+          if (message) {
+            noteEl.textContent = message;
+            noteEl.classList.remove('hidden');
+          } else {
+            noteEl.textContent = '';
+            noteEl.classList.add('hidden');
+          }
+        }
+
+        function clearBankAccountLimitNote(mode) {
+          if (!mode || bankAccountLimitNoteMode === mode) {
+            setBankAccountLimitNote('', '');
+          }
+        }
+
         function updateBankAccountCheckboxState() {
           var list = document.getElementById('bankAccountsOptions') || document.getElementById('bankAccountList');
+          var normalizedSelected = normalizeBankAccountIds(selectedBankAccountIds);
+          selectedBankAccountIds = normalizedSelected;
+          updateBankAccountSelectionCounter();
           if (!list) return;
-          var count = normalizeBankAccountIds(selectedBankAccountIds).length;
+          var count = normalizedSelected.length;
           list.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
             var id = cb.getAttribute('data-id');
-            var isChecked = selectedBankAccountIds.indexOf(id) !== -1;
+            var isChecked = normalizedSelected.indexOf(id) !== -1;
             cb.checked = isChecked;
-            cb.disabled = !isChecked && count >= 3;
+            cb.disabled = !isChecked && count >= BANK_ACCOUNT_SELECT_MAX;
+            var label = cb.closest('label');
+            if (label) {
+              if (cb.disabled) {
+                label.classList.add('opacity-60', 'cursor-not-allowed');
+              } else {
+                label.classList.remove('opacity-60', 'cursor-not-allowed');
+              }
+            }
           });
+          if (count < BANK_ACCOUNT_SELECT_MAX && bankAccountLimitNoteMode === 'limit') {
+            clearBankAccountLimitNote('limit');
+          }
         }
 
         function escapeHtml(str) {
@@ -8429,6 +8891,8 @@ app.get('/invoices', async (c) => {
           if (arr.length === 0) {
             container.innerHTML = '';
             if (emptyEl) emptyEl.classList.remove('hidden');
+            updateBankAccountCheckboxState();
+            updateBankAccountPreview();
             return;
           }
           if (emptyEl) emptyEl.classList.add('hidden');
@@ -8440,8 +8904,8 @@ app.get('/invoices', async (c) => {
             var badge = isDefault
               ? '<span class="ml-2 inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">既定</span>'
               : '';
-            return '<label class="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 hover:bg-slate-50">' +
-              '<input type="checkbox" class="bank-account-check h-4 w-4" data-id="' + escapeHtml(id) + '">' +
+            return '<label class="bank-account-option flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 hover:bg-slate-50">' +
+              '<input type="checkbox" class="bank-account-check bankAccountPick h-4 w-4" data-id="' + escapeHtml(id) + '">' +
               '<div class="min-w-0">' +
               '<div class="flex items-center">' +
               '<div class="truncate text-sm font-medium text-slate-900">' + escapeHtml(label) + '</div>' +
@@ -8456,16 +8920,23 @@ app.get('/invoices', async (c) => {
             cb.addEventListener('change', function() {
               var id = this.getAttribute('data-id');
               if (this.checked) {
-                if (normalizeBankAccountIds(selectedBankAccountIds).length >= 3) {
-                  alert('振込先は最大3件まで選択できます');
+                var normalized = normalizeBankAccountIdsAll(selectedBankAccountIds);
+                if (normalized.length >= BANK_ACCOUNT_SELECT_MAX) {
                   this.checked = false;
+                  setBankAccountLimitNote('※最大3件まで表示できます（' + BANK_ACCOUNT_SELECT_MAX + '/' + BANK_ACCOUNT_SELECT_MAX + '）', 'limit');
+                  updateBankAccountSelectionCounter();
                   return;
                 }
-                if (selectedBankAccountIds.indexOf(id) === -1) {
-                  selectedBankAccountIds.push(id);
+                if (normalized.indexOf(id) === -1) {
+                  normalized.push(id);
                 }
+                selectedBankAccountIds = normalized.slice(0, BANK_ACCOUNT_SELECT_MAX);
               } else {
-                selectedBankAccountIds = selectedBankAccountIds.filter(function(x) { return x !== id; });
+                selectedBankAccountIds = normalizeBankAccountIdsAll(selectedBankAccountIds)
+                  .filter(function(x) { return x !== id; });
+              }
+              if (bankAccountLimitNoteMode === 'adjusted') {
+                clearBankAccountLimitNote('adjusted');
               }
               updateBankAccountCheckboxState();
               updateBankAccountPreview();
@@ -8487,14 +8958,22 @@ app.get('/invoices', async (c) => {
 
         function getDefaultBankAccountIds() {
           if (!bankAccounts || bankAccounts.length === 0) return [];
-          return normalizeBankAccountIds(bankAccounts.slice(0, 3).map(function(account) { return account._id; }));
+          return normalizeBankAccountIds(bankAccounts.slice(0, BANK_ACCOUNT_SELECT_MAX).map(function(account) { return account._id; }));
         }
 
         function normalizeBankAccountIds(ids) {
-          if (!Array.isArray(ids)) return [];
-          return ids.map(function(id) { return normalizeBankAccountId(id); })
-            .filter(function(id) { return id !== null; })
-            .slice(0, 3);
+          return normalizeBankAccountIdsAll(ids).slice(0, BANK_ACCOUNT_SELECT_MAX);
+        }
+
+        function applyBankAccountSelectionLimit(reason) {
+          var normalizedAll = normalizeBankAccountIdsAll(selectedBankAccountIds);
+          var limited = normalizedAll.slice(0, BANK_ACCOUNT_SELECT_MAX);
+          var wasTrimmed = normalizedAll.length > limited.length;
+          selectedBankAccountIds = limited;
+          if (wasTrimmed && reason === 'init') {
+            setBankAccountLimitNote('※最大3件までに自動調整しました', 'adjusted');
+          }
+          return wasTrimmed;
         }
         
         // 初期化
@@ -9065,6 +9544,7 @@ app.get('/invoices', async (c) => {
           document.getElementById('deliveriesList').innerHTML = '<p class="text-sm text-gray-500">得意先を選択して「納品書を取得」をクリックしてください</p>';
           document.getElementById('selectedDeliveriesInfo').classList.add('hidden');
           selectedBankAccountIds = [];
+          clearBankAccountLimitNote();
           updateBankAccountCheckboxState();
           updateBankAccountPreview();
           
@@ -9162,6 +9642,7 @@ app.get('/invoices', async (c) => {
           } else if (bankAccounts.length > 0) {
             selectedBankAccountIds = [String(bankAccounts[0]._id || '')];
           }
+          applyBankAccountSelectionLimit('init');
           renderBankAccountOptions(bankAccounts);
           updateBankAccountCheckboxState();
           updateBankAccountPreview();
@@ -9217,7 +9698,7 @@ app.get('/invoices', async (c) => {
             billing_period_end: formData.get('billing_period_end') || null,
             notes: formData.get('notes') || '',
             bank_info: formData.get('bank_info') || '',
-            bank_account_ids: selectedBankAccountIds.slice(0, 3),
+            bank_account_ids: normalizeBankAccountIds(selectedBankAccountIds),
             items: validItems,
             delivery_ids: selectedDeliveryIds
           };

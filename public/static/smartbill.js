@@ -173,6 +173,43 @@ window.SmartBill.resetFormTracking = function() {
 };
 
 // =====================================
+// 未保存インジケーター（編集ページ共通）
+// =====================================
+(function() {
+  function setUnsaved(isUnsaved) {
+    var indicator = document.getElementById('pageUnsavedIndicator');
+    if (!indicator) return;
+    if (isUnsaved) {
+      indicator.classList.remove('hidden');
+    } else {
+      indicator.classList.add('hidden');
+    }
+  }
+  
+  document.addEventListener('DOMContentLoaded', function() {
+    setUnsaved(false);
+  });
+  
+  document.addEventListener('input', function(e) {
+    var form = e.target && e.target.closest && e.target.closest('form[data-track-unsaved="true"]');
+    if (form) setUnsaved(true);
+  });
+  
+  document.addEventListener('change', function(e) {
+    var form = e.target && e.target.closest && e.target.closest('form[data-track-unsaved="true"]');
+    if (form) setUnsaved(true);
+  });
+  
+  var originalReset = window.SmartBill.resetFormTracking;
+  window.SmartBill.resetFormTracking = function() {
+    if (typeof originalReset === 'function') {
+      originalReset();
+    }
+    setUnsaved(false);
+  };
+})();
+
+// =====================================
 // キーボードショートカット
 // =====================================
 window.SmartBill.setupKeyboardShortcuts = function(options) {
@@ -315,6 +352,7 @@ window.SmartBill.showConfirmDialog = function(options) {
     document.getElementById('confirmModalIcon').className = 'fas ' + opts.icon + ' text-white text-3xl';
     document.getElementById('confirmModalTitle').textContent = opts.title;
     document.getElementById('confirmModalMessage').innerHTML = opts.message;
+    document.getElementById('confirmModalMessage').style.whiteSpace = 'pre-line';
     
     var cancelBtnEl = document.getElementById('confirmModalCancelBtn');
     if (opts.cancelText) {

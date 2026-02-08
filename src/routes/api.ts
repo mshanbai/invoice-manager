@@ -47,7 +47,7 @@ const getRequestLabel = (c: any): string => {
   }
 }
 
-const normalizeBankAccountIdsInput = (value: unknown): { ids: string[]; error?: string } => {
+const normalizeBankAccountIdsInput = (value: unknown): { ids: string[] } => {
   let rawList: unknown[] = []
 
   if (value === undefined || value === null) {
@@ -75,12 +75,17 @@ const normalizeBankAccountIdsInput = (value: unknown): { ids: string[]; error?: 
   const normalized = rawList
     .map((id) => String(id).trim())
     .filter(Boolean)
+    .filter((id) => /^\d+$/.test(id))
 
-  const unique = Array.from(new Set(normalized))
-  const hasInvalid = unique.some((id) => !/^\d+$/.test(id))
-  if (hasInvalid) return { ids: [], error: 'Invalid bank_account_ids' }
-  if (unique.length > 3) return { ids: unique, error: 'bank_account_ids must be at most 3' }
-  return { ids: unique }
+  const unique: string[] = []
+  const seen = new Set<string>()
+  normalized.forEach((id) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    unique.push(id)
+  })
+
+  return { ids: unique.slice(0, 3) }
 }
 
 const handleSupabaseError = (
@@ -163,6 +168,65 @@ function parseNonNegativeNumber(value: unknown): number | null {
   return n
 }
 
+function toBool(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1'
+}
+
+function toOrderNum(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 999999
+}
+
+function normalizeDefaultInMemory(rows: any[]): any[] {
+  if (!Array.isArray(rows) || rows.length === 0) return []
+  const sorted = [...rows].sort((a, b) => {
+    const ad = toBool(a?.is_default) ? 1 : 0
+    const bd = toBool(b?.is_default) ? 1 : 0
+    if (bd !== ad) return bd - ad
+    const ao = toOrderNum(a?.display_order)
+    const bo = toOrderNum(b?.display_order)
+    if (ao !== bo) return ao - bo
+    const ai = Number(a?.id ?? 0)
+    const bi = Number(b?.id ?? 0)
+    return ai - bi
+  })
+  return sorted.map((r, idx) => ({
+    ...r,
+    is_default: idx === 0,
+  }))
+}
+
+async function persistSingleDefault(supabase: any, userId: string, defaultId: number | null) {
+  try {
+    const now = new Date().toISOString()
+    const { error: clearError } = await supabase
+      .from('bank_accounts')
+      .update({ is_default: false, updated_at: now })
+      .eq('user_id', userId)
+      .is('customer_id', null)
+      .eq('is_archived', false)
+    if (clearError) {
+      console.warn('[API] default normalize: failed to clear is_default', clearError)
+      return
+    }
+    if (!defaultId) return
+    const { error: setError } = await supabase
+      .from('bank_accounts')
+      .update({ is_default: true, updated_at: now })
+      .eq('user_id', userId)
+      .is('customer_id', null)
+      .eq('is_archived', false)
+      .eq('id', defaultId)
+    if (setError) {
+      console.warn('[API] default normalize: failed to set is_default', setError)
+      return
+    }
+    console.log('[API] default normalize: ok defaultId=', defaultId)
+  } catch (err) {
+    console.warn('[API] default normalize: unexpected error', err)
+  }
+}
+
 // =====================================
 // 自社情報 API
 // =====================================
@@ -182,12 +246,13 @@ api.get('/company', async (c) => {
       .select('*')
       .eq('user_id', DEMO_USER_ID)
       .is('customer_id', null)
+      .eq('is_archived', false)
       .order('is_default', { ascending: false })
       .order('display_order', { ascending: true })
       .order('id', { ascending: true })
       .limit(5)
     if (!r0.error) {
-      bankAccountsList = r0.data || []
+      bankAccountsList = normalizeDefaultInMemory(r0.data || [])
     } else {
       console.error('[API] GET /api/company bank_accounts r0 error=', r0.error)
       bankAccountsList = []
@@ -209,7 +274,7 @@ api.get('/company', async (c) => {
       account_type_label: accountTypeCodeToLabel(accountType),
       account_number: row.account_number ?? '',
       account_holder: accountHolder,
-      is_default: !!row.is_default,
+      is_default: toBool(row.is_default),
       display_order: row.display_order ?? 0,
       id: row.id
     }
@@ -233,6 +298,7 @@ api.get('/bank-accounts', async (c) => {
     .from('bank_accounts')
     .select('*')
     .eq('user_id', DEMO_USER_ID)
+    .eq('is_archived', false)
     .order('is_default', { ascending: false })
     .order('id', { ascending: true })
 
@@ -304,7 +370,7 @@ api.put('/company', async (c) => {
   })
   let hasDefault = false
   normalizedBankAccounts.forEach((a: any, index: number) => {
-    const isDefault = !!(a?.is_default ?? a?.isDefault)
+    const isDefault = toBool(a?.is_default ?? a?.isDefault)
     if (!hasDefault && isDefault) {
       hasDefault = true
       a.is_default = true
@@ -316,6 +382,13 @@ api.put('/company', async (c) => {
   if (!hasDefault && normalizedBankAccounts.length > 0) {
     normalizedBankAccounts[0].is_default = true
   }
+  let requestedDefaultCandidate: any = null
+  if (data.default_bank_account_index !== null && data.default_bank_account_index !== undefined) {
+    const requestedIndex = Number(data.default_bank_account_index)
+    if (Number.isFinite(requestedIndex) && requestedIndex >= 0 && requestedIndex < normalizedBankAccounts.length) {
+      requestedDefaultCandidate = normalizedBankAccounts[requestedIndex]
+    }
+  }
   let bankAccountIds = bankAccounts
     .map((a: any) => a?.id ?? a?.bank_account_id ?? a?.bankAccountId)
     .filter((v: any) => v !== null && v !== undefined && v !== '')
@@ -326,6 +399,16 @@ api.put('/company', async (c) => {
     if (!Number.isFinite(n) || n <= 0) return null
     return n
   }
+  const requestedDefaultId = toValidId(requestedDefaultCandidate?.id ?? requestedDefaultCandidate?.bank_account_id ?? requestedDefaultCandidate?.bankAccountId)
+  const requestedDefaultMatch = requestedDefaultCandidate
+    ? {
+        bank_name: toTrimmedString(requestedDefaultCandidate?.bank_name ?? requestedDefaultCandidate?.bankName ?? ''),
+        branch_name: toTrimmedString(requestedDefaultCandidate?.branch_name ?? requestedDefaultCandidate?.bank_branch ?? ''),
+        account_type: normalizeAccountTypeToCode(requestedDefaultCandidate?.account_type ?? requestedDefaultCandidate?.accountType) || 'ordinary',
+        account_number: toTrimmedString(requestedDefaultCandidate?.account_number ?? requestedDefaultCandidate?.accountNumber ?? ''),
+        account_holder: toTrimmedString(requestedDefaultCandidate?.account_holder ?? requestedDefaultCandidate?.account_name ?? requestedDefaultCandidate?.accountName ?? ''),
+      }
+    : null
   const accountsWithId = normalizedBankAccounts.filter((a: any) => toValidId(a?.id ?? a?.bank_account_id ?? a?.bankAccountId) !== null)
   const accountsWithoutId = normalizedBankAccounts.filter((a: any) => toValidId(a?.id ?? a?.bank_account_id ?? a?.bankAccountId) === null)
   console.log('[API] PUT /api/company existing=', accountsWithId.length, 'fresh=', accountsWithoutId.length)
@@ -341,7 +424,8 @@ api.put('/company', async (c) => {
       account_type: normalizeAccountTypeToCode(a?.account_type ?? a?.accountType) || 'ordinary',
       account_number: toTrimmedString(a?.account_number ?? a?.accountNumber ?? ''),
       account_holder: toTrimmedString(a?.account_holder ?? a?.account_name ?? a?.accountName ?? ''),
-      is_default: !!a?.is_default,
+      is_default: false,
+      is_archived: false,
       display_order: a?.display_order ?? a?.displayOrder ?? index + 1,
       updated_at: new Date().toISOString(),
     }))
@@ -365,7 +449,8 @@ api.put('/company', async (c) => {
       account_type: normalizeAccountTypeToCode(a?.account_type ?? a?.accountType) || 'ordinary',
       account_number: toTrimmedString(a?.account_number ?? a?.accountNumber ?? ''),
       account_holder: toTrimmedString(a?.account_holder ?? a?.account_name ?? a?.accountName ?? ''),
-      is_default: !!a?.is_default,
+      is_default: false,
+      is_archived: false,
       display_order: a?.display_order ?? a?.displayOrder ?? index + 1,
       updated_at: new Date().toISOString(),
     }))
@@ -386,20 +471,30 @@ api.put('/company', async (c) => {
   if (Array.isArray(bankAccounts)) {
     const payloadIds = bankAccountIds
     if (payloadIds.length > 0) {
-      const { error: deleteError } = await supabase
+      const { error: archiveError } = await supabase
         .from('bank_accounts')
-        .delete()
+        .update({ is_archived: true, is_default: false, updated_at: new Date().toISOString() })
         .eq('user_id', DEMO_USER_ID)
         .is('customer_id', null)
         .not('id', 'in', `(${payloadIds.join(',')})`)
-      if (deleteError) return handleSupabaseError(c, deleteError, 'bank_accounts delete')
+      if (archiveError && archiveError.code !== '23503') {
+        return handleSupabaseError(c, archiveError, 'bank_accounts archive')
+      }
+      if (archiveError && archiveError.code === '23503') {
+        console.warn('[API] bank_accounts archive skipped due to FK constraint', archiveError)
+      }
     } else {
-      const { error: deleteError } = await supabase
+      const { error: archiveError } = await supabase
         .from('bank_accounts')
-        .delete()
+        .update({ is_archived: true, is_default: false, updated_at: new Date().toISOString() })
         .eq('user_id', DEMO_USER_ID)
         .is('customer_id', null)
-      if (deleteError) return handleSupabaseError(c, deleteError, 'bank_accounts delete')
+      if (archiveError && archiveError.code !== '23503') {
+        return handleSupabaseError(c, archiveError, 'bank_accounts archive')
+      }
+      if (archiveError && archiveError.code === '23503') {
+        console.warn('[API] bank_accounts archive skipped due to FK constraint', archiveError)
+      }
     }
   }
   const { data: existing, error: existingError } = await supabase
@@ -524,12 +619,14 @@ api.put('/company', async (c) => {
       .select('*')
       .eq('user_id', DEMO_USER_ID)
       .is('customer_id', null)
+      .eq('is_archived', false)
       .order('is_default', { ascending: false })
       .order('display_order', { ascending: true })
       .order('id', { ascending: true })
       .limit(5)
     if (!r0.error) {
-      responseBankAccounts = (r0.data || []).map((row: any) => {
+      const normalizedRows = normalizeDefaultInMemory(r0.data || [])
+      responseBankAccounts = normalizedRows.map((row: any) => {
         const branchName = row.branch_name ?? row.bank_branch ?? ''
         const accountType = normalizeAccountTypeToCode(row.account_type) || 'ordinary'
         const accountHolder = row.account_holder ?? row.account_name ?? ''
@@ -541,7 +638,7 @@ api.put('/company', async (c) => {
           account_type_label: accountTypeCodeToLabel(accountType),
           account_number: row.account_number ?? '',
           account_holder: accountHolder,
-          is_default: !!row.is_default,
+          is_default: toBool(row.is_default),
           display_order: row.display_order ?? 0,
           id: row.id
         }
@@ -550,6 +647,68 @@ api.put('/company', async (c) => {
     }
   } catch (e) {
     console.error('[API] PUT /api/company bank_accounts select exception=', e)
+  }
+  try {
+    let defaultId: number | null = null
+    if (requestedDefaultId) {
+      defaultId = requestedDefaultId
+    } else if (requestedDefaultMatch) {
+      const matched = responseBankAccounts.find((row: any) => {
+        const bankName = toTrimmedString(row?.bank_name ?? row?.bankName ?? '')
+        const branchName = toTrimmedString(row?.branch_name ?? row?.bank_branch ?? '')
+        const accountType = normalizeAccountTypeToCode(row?.account_type ?? row?.accountType) || 'ordinary'
+        const accountNumber = toTrimmedString(row?.account_number ?? row?.accountNumber ?? '')
+        const accountHolder = toTrimmedString(row?.account_holder ?? row?.account_name ?? row?.accountName ?? '')
+        return (
+          bankName === requestedDefaultMatch.bank_name &&
+          branchName === requestedDefaultMatch.branch_name &&
+          accountType === requestedDefaultMatch.account_type &&
+          accountNumber === requestedDefaultMatch.account_number &&
+          accountHolder === requestedDefaultMatch.account_holder
+        )
+      })
+      defaultId = toValidId(matched?.id ?? matched?.bank_account_id ?? matched?.bankAccountId)
+    }
+    if (!defaultId && responseBankAccounts.length > 0) {
+      const fallbackId = Number(responseBankAccounts[0].id)
+      defaultId = Number.isFinite(fallbackId) ? fallbackId : null
+    }
+    await persistSingleDefault(supabase, DEMO_USER_ID, defaultId)
+    const r1 = await supabase
+      .from('bank_accounts')
+      .select('*')
+      .eq('user_id', DEMO_USER_ID)
+      .is('customer_id', null)
+      .eq('is_archived', false)
+      .order('is_default', { ascending: false })
+      .order('display_order', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(5)
+    if (!r1.error) {
+      const normalizedRows = normalizeDefaultInMemory(r1.data || [])
+      responseBankAccounts = normalizedRows.map((row: any) => {
+        const branchName = row.branch_name ?? row.bank_branch ?? ''
+        const accountType = normalizeAccountTypeToCode(row.account_type) || 'ordinary'
+        const accountHolder = row.account_holder ?? row.account_name ?? ''
+        return {
+          ...row,
+          branch_name: branchName,
+          bank_branch: branchName,
+          account_type: accountType,
+          account_type_label: accountTypeCodeToLabel(accountType),
+          account_number: row.account_number ?? '',
+          account_holder: accountHolder,
+          is_default: toBool(row.is_default),
+          display_order: row.display_order ?? 0,
+          id: row.id
+        }
+      })
+      bankAccountIds = responseBankAccounts.map((row: any) => String(row.id))
+    } else {
+      console.warn('[API] PUT /api/company bank_accounts reselect error=', r1.error)
+    }
+  } catch (e) {
+    console.warn('[API] default normalize: reselect exception=', e)
   }
   console.log('[API] PUT /api/company response bank_accounts count=', responseBankAccounts.length, 'ids=', bankAccountIds)
   return c.json({ success: true, bank_account_ids: bankAccountIds, bank_accounts: responseBankAccounts })
@@ -3230,9 +3389,6 @@ api.post('/invoices', async (c) => {
   const totalAmount = subtotal + totalTax
 
   const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
-  if (normalizedBankIds.error) {
-    return c.json({ success: false, error: normalizedBankIds.error }, 400)
-  }
   const bankAccountIds = normalizedBankIds.ids
   const bankAccountIdNums = bankAccountIds.map((id: string) => Number(id))
   
@@ -3325,9 +3481,6 @@ api.put('/invoices/:id', async (c) => {
   const totalAmount = subtotal + totalTax
 
   const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
-  if (normalizedBankIds.error) {
-    return c.json({ success: false, error: normalizedBankIds.error }, 400)
-  }
   const bankAccountIds = normalizedBankIds.ids
   const bankAccountIdNums = bankAccountIds.map((id: string) => Number(id))
   
