@@ -47,6 +47,119 @@ const docHeaderTitleHelpers = `
   }
 `;
 
+const taxRateHelpers = `
+  function normalizeTaxRate(rate, fallback) {
+    if (rate === null || rate === undefined || rate === '') return fallback;
+    var n = Number(rate);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function resolveCategoryTaxRate(category, fallback) {
+    if (!category) return fallback;
+    var taxType = category.tax_type ?? category.taxType ?? category.taxCategory ?? null;
+    if (taxType === 'standard') return 10;
+    if (taxType === 'reduced') return 8;
+    if (taxType === 'non_taxable') return 0;
+    if (taxType === 'exempt') return 0;
+    if (taxType === 'excluded') return 0;
+    if (taxType === 'custom') return normalizeTaxRate(category.tax_rate ?? category.taxRate, fallback);
+    return normalizeTaxRate(category.tax_rate ?? category.taxRate, fallback);
+  }
+  function resolveLineTaxRate(params) {
+    var product = params && params.product ? params.product : null;
+    var category = params && params.category ? params.category : null;
+    var fallback = params ? params.fallback : 10;
+    var productRateRaw = product && (product.tax_rate ?? product.taxRate);
+    if (productRateRaw !== null && productRateRaw !== undefined && productRateRaw !== '') {
+      return normalizeTaxRate(productRateRaw, fallback);
+    }
+    return resolveCategoryTaxRate(category, fallback);
+  }
+`;
+
+const recentAccordionScript = `
+  (function setupRecentAccordion() {
+    var w = window;
+    if (w.__sbRecentAccordionInstalled) return;
+    w.__sbRecentAccordionInstalled = true;
+
+    function findRoot(toggleEl) {
+      return toggleEl.closest('[data-subsidebar]');
+    }
+
+    function applyOpen(root) {
+      var body = root.querySelector('[data-recent-body]');
+      if (!body) return;
+      body.classList.remove('hidden');
+      var chevron = root.querySelector('[data-recent-chevron]');
+      if (chevron) {
+        chevron.classList.add('rotate-180');
+      }
+    }
+
+    function toggle(root) {
+      var body = root.querySelector('[data-recent-body]');
+      if (!body) return;
+      var willOpen = body.classList.contains('hidden');
+      body.classList.toggle('hidden', !willOpen);
+      var chevron = root.querySelector('[data-recent-chevron]');
+      if (chevron) {
+        chevron.classList.toggle('rotate-180', willOpen);
+      }
+    }
+
+    function initAll() {
+      var toggles = document.querySelectorAll('[data-recent-toggle]');
+      toggles.forEach(function(t) {
+        var root = findRoot(t);
+        if (root) applyOpen(root);
+      });
+    }
+
+    document.addEventListener('click', function(ev) {
+      var target = ev.target;
+      if (!target || !target.closest) return;
+      var toggleEl = target.closest('[data-recent-toggle]');
+      if (!toggleEl) return;
+      var root = findRoot(toggleEl);
+      if (!root) return;
+      toggle(root);
+    });
+
+    if (document.body) {
+      var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+          Array.prototype.forEach.call(m.addedNodes, function(node) {
+            if (!node || node.nodeType !== 1) return;
+            if (node.matches && node.matches('[data-recent-toggle]')) {
+              var root = findRoot(node);
+              if (root) applyOpen(root);
+            }
+            if (node.querySelectorAll) {
+              var innerToggles = node.querySelectorAll('[data-recent-toggle]');
+              Array.prototype.forEach.call(innerToggles, function(t) {
+                var root = findRoot(t);
+                if (root) applyOpen(root);
+              });
+            }
+          });
+        });
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+  })();
+`;
+
+const supabaseEnv = {
+  url: (import.meta as any).env?.VITE_SUPABASE_URL || '',
+  anonKey: (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
+}
+
 // CORS設定
 app.use('/api/*', cors())
 
@@ -1462,6 +1575,31 @@ app.get('/categories', async (c) => {
               </div>
             </div>
             
+            {/* 分類一覧 見出し（最近編集とトーン統一） */}
+            <div class="border-t border-slate-200">
+              <div class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  class="h-4 w-4 text-blue-600"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <line x1="8" y1="6" x2="21" y2="6"></line>
+                  <line x1="8" y1="12" x2="21" y2="12"></line>
+                  <line x1="8" y1="18" x2="21" y2="18"></line>
+                  <circle cx="4" cy="6" r="1"></circle>
+                  <circle cx="4" cy="12" r="1"></circle>
+                  <circle cx="4" cy="18" r="1"></circle>
+                </svg>
+                <span>分類一覧</span>
+              </div>
+            </div>
             <div id="categoryListContainer" class="flex-1 overflow-y-auto min-h-0">
               <div class="p-4 text-center text-gray-500 text-sm">読込中...</div>
             </div>
@@ -1480,6 +1618,7 @@ app.get('/categories', async (c) => {
       </div>
       
       <script dangerouslySetInnerHTML={{__html: `
+        ${taxRateHelpers}
         // ビュー要素
         var tableView = document.getElementById('tableView');
         var detailView = document.getElementById('detailView');
@@ -1604,6 +1743,7 @@ app.get('/categories', async (c) => {
           
           categoryTableBody.innerHTML = categories.map(function(c) {
             var taxTypeLabel = taxTypeLabels[c.tax_type] || taxTypeLabels['standard'];
+            var resolvedTaxRate = resolveCategoryTaxRate(c, 10);
             var taxBadgeColor = c.tax_type === 'reduced' ? 'bg-green-100 text-green-800' : 
                                c.tax_type === 'exempt' || c.tax_type === 'excluded' ? 'bg-gray-100 text-gray-800' : 
                                'bg-blue-100 text-blue-800';
@@ -1611,7 +1751,7 @@ app.get('/categories', async (c) => {
               '<td class="px-4 py-3 font-mono text-sm">' + (c.category_code || '-') + '</td>' +
               '<td class="px-4 py-3 font-medium">' + c.category_name + '</td>' +
               '<td class="px-4 py-3"><span class="text-xs font-bold px-2 py-1 rounded ' + taxBadgeColor + '">' + taxTypeLabel + '</span></td>' +
-              '<td class="px-4 py-3 text-sm">' + c.tax_rate + '%</td>' +
+              '<td class="px-4 py-3 text-sm">' + resolvedTaxRate + '%</td>' +
               '<td class="px-4 py-3 text-sm text-gray-500 truncate max-w-xs">' + (c.notes || '-') + '</td>' +
               '<td class="px-4 py-3 text-center">' +
               '<button class="text-blue-600 hover:text-blue-800 edit-btn" data-id="' + c.id + '"><i class="fas fa-edit"></i></button>' +
@@ -1649,11 +1789,12 @@ app.get('/categories', async (c) => {
           var html = categories.map(function(c) {
             var isSelected = currentCategoryId === c.id;
             var taxTypeLabel = taxTypeLabels[c.tax_type] || taxTypeLabels['standard'];
+            var resolvedTaxRate = resolveCategoryTaxRate(c, 10);
             return '<div class="category-item p-3 border-b cursor-pointer hover:bg-blue-50 ' + (isSelected ? 'bg-blue-100 border-l-4 border-l-blue-600' : '') + '" data-id="' + c.id + '">' +
               '<div class="flex justify-between items-start">' +
               '<div class="flex-1 min-w-0">' +
               '<p class="font-medium text-gray-800 truncate">' + c.category_name + '</p>' +
-              '<p class="text-xs text-gray-500 mt-1"><i class="fas fa-hashtag mr-1"></i>' + (c.category_code || '-') + ' / ' + taxTypeLabel + ' ' + c.tax_rate + '%</p>' +
+              '<p class="text-xs text-gray-500 mt-1"><i class="fas fa-hashtag mr-1"></i>' + (c.category_code || '-') + ' / ' + taxTypeLabel + ' ' + resolvedTaxRate + '%</p>' +
               '</div>' +
               '</div></div>';
           }).join('');
@@ -1751,7 +1892,7 @@ app.get('/categories', async (c) => {
         function renderForm(data) {
           var isNew = !data;
           var taxType = data ? (data.tax_type || 'standard') : 'standard';
-          var taxRate = data ? data.tax_rate : 10;
+          var taxRate = resolveCategoryTaxRate(data, 10);
           
           // 固定ヘッダー
           var headerHtml = '<div class="sticky top-0 bg-white z-10 -mt-6 -mx-6 px-6 py-4 border-b-2 border-gray-200 shadow-sm mb-6">' +
@@ -1889,7 +2030,7 @@ app.get('/categories', async (c) => {
             e.preventDefault();
             var formData = new FormData(this);
             var sendData = Object.fromEntries(formData);
-            sendData.tax_rate = parseFloat(sendData.tax_rate) || 10;
+            sendData.tax_rate = resolveCategoryTaxRate(sendData, 10);
             sendData.display_order = parseInt(sendData.display_order) || 0;
             
             var method = isNew ? 'post' : 'put';
@@ -2072,6 +2213,31 @@ app.get('/clients', async (c) => {
               </div>
             </div>
             
+            {/* 取引先一覧 見出し（最近編集とトーン統一） */}
+            <div class="border-t border-slate-200">
+              <div class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  class="h-4 w-4 text-blue-600"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <line x1="8" y1="6" x2="21" y2="6"></line>
+                  <line x1="8" y1="12" x2="21" y2="12"></line>
+                  <line x1="8" y1="18" x2="21" y2="18"></line>
+                  <circle cx="4" cy="6" r="1"></circle>
+                  <circle cx="4" cy="12" r="1"></circle>
+                  <circle cx="4" cy="18" r="1"></circle>
+                </svg>
+                <span>取引先一覧</span>
+              </div>
+            </div>
             <div id="clientListContainer" class="flex-1 overflow-y-auto min-h-0">
               <div class="p-4 text-center text-gray-500 text-sm">読込中...</div>
             </div>
@@ -2090,6 +2256,7 @@ app.get('/clients', async (c) => {
       </div>
       
       <script dangerouslySetInnerHTML={{__html: `
+        ${taxRateHelpers}
         // ビュー要素
         var tableView = document.getElementById('tableView');
         var detailView = document.getElementById('detailView');
@@ -2818,6 +2985,31 @@ app.get('/products', async (c) => {
               </div>
             </div>
             
+            {/* 商品一覧 見出し（最近編集とトーン統一） */}
+            <div class="border-t border-slate-200">
+              <div class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  class="h-4 w-4 text-blue-600"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <line x1="8" y1="6" x2="21" y2="6"></line>
+                  <line x1="8" y1="12" x2="21" y2="12"></line>
+                  <line x1="8" y1="18" x2="21" y2="18"></line>
+                  <circle cx="4" cy="6" r="1"></circle>
+                  <circle cx="4" cy="12" r="1"></circle>
+                  <circle cx="4" cy="18" r="1"></circle>
+                </svg>
+                <span>商品一覧</span>
+              </div>
+            </div>
             <div id="productListContainer" class="flex-1 overflow-y-auto min-h-0">
               <div class="p-4 text-center text-gray-500 text-sm">読込中...</div>
             </div>
@@ -2836,6 +3028,7 @@ app.get('/products', async (c) => {
       </div>
       
       <script dangerouslySetInnerHTML={{__html: `
+        ${taxRateHelpers}
         // ビュー要素
         var tableView = document.getElementById('tableView');
         var detailView = document.getElementById('detailView');
@@ -2865,6 +3058,65 @@ app.get('/products', async (c) => {
         var recentToggle = document.getElementById('recentToggle');
         var recentToggleIcon = document.getElementById('recentToggleIcon');
         var recentProductsList = document.getElementById('recentProductsList');
+        
+        var supabaseUrl = ${JSON.stringify(supabaseEnv.url)};
+        var supabaseAnonKey = ${JSON.stringify(supabaseEnv.anonKey)};
+        var supabaseClientPromise = null;
+        
+        function showSupabaseConfigError() {
+          var message = '接続情報が未設定です';
+          if (productTableBody) {
+            productTableBody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-red-500">' + message + '</td></tr>';
+          }
+          if (productListContainer) {
+            productListContainer.innerHTML = '<div class="p-4 text-center text-red-500 text-sm">' + message + '</div>';
+          }
+          if (searchResultCount) {
+            searchResultCount.innerHTML = '<span class="text-red-500">' + message + '</span>';
+          }
+        }
+        
+        function getSupabaseClient() {
+          if (window.SmartBill && window.SmartBill.supabaseClient) {
+            return Promise.resolve(window.SmartBill.supabaseClient);
+          }
+          if (supabaseClientPromise) return supabaseClientPromise;
+          
+          supabaseClientPromise = new Promise(function(resolve, reject) {
+            if (!supabaseUrl || !supabaseAnonKey) {
+              console.error('Supabaseの環境変数が未設定です');
+              showSupabaseConfigError();
+              resolve(null);
+              return;
+            }
+            
+            function initClient() {
+              if (window.supabase && window.supabase.createClient) {
+                var client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+                if (window.SmartBill) window.SmartBill.supabaseClient = client;
+                resolve(client);
+                return;
+              }
+              reject(new Error('Supabaseクライアントの初期化に失敗しました'));
+            }
+            
+            if (window.supabase && window.supabase.createClient) {
+              initClient();
+              return;
+            }
+            
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+            script.async = true;
+            script.onload = initClient;
+            script.onerror = function() {
+              reject(new Error('Supabaseスクリプトの読み込みに失敗しました'));
+            };
+            document.head.appendChild(script);
+          });
+          
+          return supabaseClientPromise;
+        }
         
         // 最近編集セクションの開閉
         if (recentToggle) {
@@ -2923,15 +3175,56 @@ app.get('/products', async (c) => {
         // 商品リスト読み込み
         async function loadProducts(search) {
           try {
-            var params = new URLSearchParams();
-            if (searchInputTable.value) params.set('search', searchInputTable.value);
-            if (search && !params.has('search')) params.set('search', search);
-            if (filterCategory.value) params.set('category_id', filterCategory.value);
-            if (filterWholesale.value !== '') params.set('is_wholesale', filterWholesale.value);
+            var searchValue = searchInputTable.value || '';
+            var searchTerm = searchValue ? searchValue : (search || '');
+            var client = await getSupabaseClient();
+            if (!client) return;
             
-            var url = '/api/products' + (params.toString() ? '?' + params.toString() : '');
-            var res = await axios.get(url);
-            products = res.data;
+            var query = client
+              .from('products')
+              .select('*, categories(category_name, category_code, display_order)')
+              .eq('is_active', 1)
+              .eq('user_id', 'demo-user-001');
+            
+            if (filterCategory.value) {
+              query = query.eq('category_id', filterCategory.value);
+            }
+            
+            if (searchTerm) {
+              var rawSearch = typeof searchTerm === 'string' ? searchTerm : '';
+              var s = rawSearch.trim();
+              
+              if (s.length > 0) {
+                var like = '%' + s + '%';
+                
+                var orFilters = [
+                  'product_code.ilike.' + like,
+                  'product_name.ilike.' + like,
+                  'jan_code.ilike.' + like,
+                  'remarks.ilike.' + like,
+                  'notes.ilike.' + like
+                ].join(',');
+                
+                query = query.or(orFilters);
+              }
+            }
+            
+            if (filterWholesale.value !== '') {
+              query = query.eq('is_wholesale', parseInt(filterWholesale.value));
+            }
+            
+            var res = await query
+              .order('display_order', { foreignTable: 'categories', ascending: true, nullsFirst: true })
+              .order('product_code', { ascending: true })
+              .order('product_name', { ascending: true });
+            
+            if (res.error) throw res.error;
+            products = (res.data || []).map(function(row) {
+              return Object.assign({}, row, {
+                category_name: row.categories ? (row.categories.category_name || null) : null,
+                category_code: row.categories ? (row.categories.category_code || null) : null
+              });
+            });
             renderProductTable();
             renderProductList();
             updateSearchResultCount();
@@ -3135,9 +3428,11 @@ app.get('/products', async (c) => {
             }).join('');
           
           // 新規登録時の税率初期値（分類が選択されていればそこから取得）
-          var initialTaxRate = data ? (data.tax_rate || '') : '';
-          if (!initialTaxRate && data && data.category_tax_rate) {
-            initialTaxRate = data.category_tax_rate;
+          var initialTaxRate = '';
+          if (data && data.tax_rate !== null && data.tax_rate !== undefined && data.tax_rate !== '') {
+            initialTaxRate = normalizeTaxRate(data.tax_rate, 10);
+          } else if (data && data.category_tax_rate !== null && data.category_tax_rate !== undefined && data.category_tax_rate !== '') {
+            initialTaxRate = normalizeTaxRate(data.category_tax_rate, 10);
           }
           
           // 固定ヘッダー
@@ -3508,19 +3803,31 @@ app.get('/products', async (c) => {
           // 分類変更で税率を自動反映
           categorySelect.addEventListener('change', function() {
             var selectedOption = this.options[this.selectedIndex];
-            if (selectedOption && selectedOption.dataset.taxRate) {
-              taxRateInput.value = selectedOption.dataset.taxRate;
-              taxRateInput.placeholder = selectedOption.dataset.taxRate + '% (' + (selectedOption.dataset.taxType === 'reduced' ? '軽減' : '標準') + ')';
+            if (selectedOption) {
+              var resolvedRate = resolveCategoryTaxRate({
+                tax_type: selectedOption.dataset.taxType,
+                tax_rate: selectedOption.dataset.taxRate
+              }, 10);
+              taxRateInput.value = resolvedRate;
+              var typeLabel = selectedOption.dataset.taxType === 'reduced'
+                ? '軽減'
+                : (selectedOption.dataset.taxType === 'standard' ? '標準'
+                : (selectedOption.dataset.taxType === 'custom' ? 'カスタム' : '非課税'));
+              taxRateInput.placeholder = resolvedRate + '% (' + typeLabel + ')';
             }
             // 分類内の商品名サジェストをリセット
             loadProductSuggestions();
           });
           
           // 新規登録時または編集時で税率が未設定なら分類から反映
-          if (categorySelect.value && !taxRateInput.value) {
+          if (categorySelect.value && taxRateInput.value === '') {
             var selectedOption = categorySelect.options[categorySelect.selectedIndex];
-            if (selectedOption && selectedOption.dataset.taxRate) {
-              taxRateInput.value = selectedOption.dataset.taxRate;
+            if (selectedOption) {
+              var resolvedRate = resolveCategoryTaxRate({
+                tax_type: selectedOption.dataset.taxType,
+                tax_rate: selectedOption.dataset.taxRate
+              }, 10);
+              taxRateInput.value = resolvedRate;
             }
           }
           
@@ -4449,7 +4756,7 @@ app.get('/products', async (c) => {
                 product_code: '',
                 jan_code: duplicateData.jan_code || '',
                 category_id: duplicateData.category_id || null,
-                tax_rate: duplicateData.tax_rate || null,
+                tax_rate: (duplicateData.tax_rate === null || duplicateData.tax_rate === undefined || duplicateData.tax_rate === '') ? null : normalizeTaxRate(duplicateData.tax_rate, 10),
                 min_lot: parseInt(duplicateData.min_lot) || 1,
                 unit: duplicateData.unit || '個',
                 is_wholesale: parseInt(duplicateData.is_wholesale) || 0,
@@ -4518,7 +4825,7 @@ app.get('/products', async (c) => {
             }
             sendData.min_lot = parseInt(sendData.min_lot) || 1;
             sendData.category_id = sendData.category_id || null;
-            sendData.tax_rate = sendData.tax_rate ? parseFloat(sendData.tax_rate) : null;
+            sendData.tax_rate = (sendData.tax_rate === null || sendData.tax_rate === undefined || sendData.tax_rate === '') ? null : normalizeTaxRate(sendData.tax_rate, 10);
             
             // 原価の処理
             if (sendData.is_wholesale) {
@@ -4788,40 +5095,47 @@ app.get('/deliveries', async (c) => {
           </div>
           
           {/* 左サイドバー（展開時） */}
-          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden">
-            {/* 納品一覧 */}
+          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden sticky top-4 self-start" data-subsidebar="deliveries">
+            {/* 検索 */}
             <div class="bg-white rounded-lg shadow mb-4">
-              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-truck mr-2 text-green-500"></i>納品一覧
-                </h3>
-                <div class="flex gap-2">
-                  <button id="backToTableBtn" class="text-xs text-blue-600 hover:text-blue-800" title="一覧に戻る">
-                    <i class="fas fa-th-list"></i>
+              <div class="p-3">
+                <div class="flex items-center justify-between mb-2">
+                  <button id="backToTableBtn" class="text-sm text-slate-700 hover:text-slate-900" title="一覧に戻る">
+                    <i class="fas fa-th-list mr-1"></i>一覧に戻る
                   </button>
-                  <button id="collapseSidebarBtn" class="text-xs text-gray-500 hover:text-gray-700" title="サイドバーを閉じる">
-                    <i class="fas fa-chevron-left"></i>
+                  <button id="collapseSidebarBtn" class="text-sm text-slate-700 hover:text-slate-900" title="サイドバーを閉じる">
+                    <i class="fas fa-times mr-1"></i>閉じる
                   </button>
                 </div>
-              </div>
-              <div class="p-2">
                 <input type="text" id="sidebarSearch" placeholder="検索..." 
-                  class="w-full border rounded px-2 py-1 text-sm mb-2" />
-                <div id="sidebarDeliveryList" class="max-h-64 overflow-y-auto space-y-1">
-                  {/* 動的に生成 */}
-                </div>
+                  class="w-full border rounded px-2 py-1 text-sm" />
               </div>
             </div>
             
             {/* 最近編集した納品 */}
+            <div class="bg-white rounded-lg shadow mb-4" id="recentDeliveriesSection">
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between cursor-pointer" id="recentToggle" data-recent-toggle="deliveries">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-clock mr-2 text-orange-500 text-sm"></i>最近編集
+                </h3>
+                <i class="fas fa-chevron-down text-gray-400 text-xs transition-transform duration-200" id="recentToggleIcon" data-recent-chevron="deliveries"></i>
+              </div>
+              <div id="recentDeliveries" class="p-2 space-y-1 max-h-48 overflow-y-auto" data-recent-body="deliveries">
+                {/* 動的に生成 */}
+              </div>
+            </div>
+            
+            {/* 納品一覧 */}
             <div class="bg-white rounded-lg shadow">
-              <div class="p-3 border-b bg-gray-50">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-clock mr-2 text-orange-500"></i>最近編集
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-truck mr-2 text-green-600 text-sm"></i>納品一覧
                 </h3>
               </div>
-              <div id="recentDeliveries" class="p-2 space-y-1 max-h-48 overflow-y-auto">
-                {/* 動的に生成 */}
+              <div class="p-2">
+                <div id="sidebarDeliveryList" class="max-h-[calc(100vh-220px)] overflow-y-auto space-y-1">
+                  {/* 動的に生成 */}
+                </div>
               </div>
             </div>
           </div>
@@ -4844,6 +5158,7 @@ app.get('/deliveries', async (c) => {
                   <button type="button" id="deleteDeliveryBtn" class="hidden bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-sm">
                     <i class="fas fa-trash-alt mr-1"></i>削除
                   </button>
+                  <span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>
                   <button type="button" id="saveDeliveryBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold">
                     <i class="fas fa-save mr-1"></i>保存
                   </button>
@@ -4853,7 +5168,7 @@ app.get('/deliveries', async (c) => {
                 </div>
               </div>
 
-              <form id="deliveryForm" class="p-6">
+              <form id="deliveryForm" class="p-6" data-track-unsaved="true">
                 {/* 基本情報 */}
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                   <div class="md:col-span-1">
@@ -5013,7 +5328,7 @@ app.get('/deliveries', async (c) => {
                 <option value="">全カテゴリ</option>
               </select>
             </div>
-            <div id="productList" class="max-h-96 overflow-y-auto space-y-2">
+            <div id="productList" class="max-h-[calc(100vh-260px)] overflow-y-auto space-y-2 pb-12">
               {/* 動的に生成 */}
             </div>
           </div>
@@ -5055,6 +5370,9 @@ app.get('/deliveries', async (c) => {
 
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
+        ${taxRateHelpers}
+        ${taxRateHelpers}
+        ${recentAccordionScript}
         // 状態管理
         var currentDeliveryId = null;
         var originalDeliveryStatus = null;
@@ -5514,6 +5832,11 @@ app.get('/deliveries', async (c) => {
           
           tbody.innerHTML = items.map(function(item, index) {
             var amount = item.quantity * item.unit_price;
+            var rateValue = normalizeTaxRate(item.tax_rate, 10);
+            var customRateOption = '';
+            if (rateValue !== 10 && rateValue !== 8 && rateValue !== 0) {
+              customRateOption = '<option value="' + rateValue + '" selected>' + rateValue + '%</option>';
+            }
             return '<tr class="border-b hover:bg-gray-50 item-row" data-index="' + index + '">' +
               '<td class="px-2 py-2 text-gray-500">' +
               '<span class="drag-handle mr-1" title="ドラッグで並び替え"><i class="fas fa-grip-vertical"></i></span>' +
@@ -5527,9 +5850,10 @@ app.get('/deliveries', async (c) => {
               '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
               '<td class="px-2 py-2">' +
               '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-              '<option value="10"' + (item.tax_rate == 10 ? ' selected' : '') + '>10%</option>' +
-              '<option value="8"' + (item.tax_rate == 8 ? ' selected' : '') + '>8%</option>' +
-              '<option value="0"' + (item.tax_rate == 0 ? ' selected' : '') + '>0%</option>' +
+              customRateOption +
+              '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+              '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+              '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
               '</select></td>' +
               '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
               '<td class="px-2 py-2"><input type="text" class="item-notes w-full border rounded px-2 py-1 text-sm" value="' + (item.notes || '') + '" placeholder="備考" /></td>' +
@@ -5599,7 +5923,7 @@ app.get('/deliveries', async (c) => {
             subtotal += amount;
             
             // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = (item.tax_rate !== null && item.tax_rate !== undefined) ? parseFloat(item.tax_rate) : 10;
+            var rate = normalizeTaxRate(item.tax_rate, 10);
             if (!taxByRate[rate]) taxByRate[rate] = 0;
             taxByRate[rate] += Math.floor(amount * rate / 100);
           });
@@ -5681,12 +6005,14 @@ app.get('/deliveries', async (c) => {
           
           var quantity = product.min_lot || items[currentItemIndex].quantity || 1;
           
+          var category = categories.find(function(c) { return c.id == product.category_id; }) || null;
+          var resolvedTaxRate = resolveLineTaxRate({ product: product, category: category, fallback: 10 });
           items[currentItemIndex] = {
             product_id: product.id,
             product_name: product.product_name,
             quantity: quantity,
             unit_price: product.unit_price || 0,
-            tax_rate: product.tax_rate || 10,
+            tax_rate: resolvedTaxRate,
             notes: product.remarks || '',
             unit: product.unit || '個'
           };
@@ -5810,7 +6136,7 @@ app.get('/deliveries', async (c) => {
                 product_name: item.product_name,
                 quantity: item.quantity,
                 unit_price: item.unit_price,
-                tax_rate: item.tax_rate || 10,
+                tax_rate: normalizeTaxRate(item.tax_rate, 10),
                 notes: item.notes || ''
               };
             });
@@ -6024,6 +6350,7 @@ app.get('/deliveries', async (c) => {
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
+            if (window.SmartBill) window.SmartBill.resetFormTracking();
             await loadDeliveries();
             await loadRecentDeliveries();
             renderSidebarDeliveries();
@@ -6435,40 +6762,47 @@ app.get('/estimates', async (c) => {
           </div>
           
           {/* 左サイドバー（展開時） */}
-          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden">
-            {/* 見積一覧 */}
+          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden sticky top-4 self-start" data-subsidebar="estimates">
+            {/* 検索 */}
             <div class="bg-white rounded-lg shadow mb-4">
-              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-file-invoice mr-2 text-blue-500"></i>見積一覧
-                </h3>
-                <div class="flex gap-2">
-                  <button id="backToTableBtn" class="text-xs text-blue-600 hover:text-blue-800" title="一覧に戻る">
-                    <i class="fas fa-th-list"></i>
+              <div class="p-3">
+                <div class="flex items-center justify-between mb-2">
+                  <button id="backToTableBtn" class="text-sm text-slate-700 hover:text-slate-900" title="一覧に戻る">
+                    <i class="fas fa-th-list mr-1"></i>一覧に戻る
                   </button>
-                  <button id="collapseSidebarBtn" class="text-xs text-gray-500 hover:text-gray-700" title="サイドバーを閉じる">
-                    <i class="fas fa-chevron-left"></i>
+                  <button id="collapseSidebarBtn" class="text-sm text-slate-700 hover:text-slate-900" title="サイドバーを閉じる">
+                    <i class="fas fa-times mr-1"></i>閉じる
                   </button>
                 </div>
-              </div>
-              <div class="p-2">
                 <input type="text" id="sidebarSearch" placeholder="検索..."
-                  class="w-full border rounded px-2 py-1 text-sm mb-2" />
-                <div id="sidebarEstimateList" class="max-h-64 overflow-y-auto space-y-1">
-                  {/* 動的に生成 */}
-                </div>
+                  class="w-full border rounded px-2 py-1 text-sm" />
               </div>
             </div>
             
             {/* 最近編集した見積 */}
+            <div class="bg-white rounded-lg shadow mb-4" id="recentEstimatesSection">
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between cursor-pointer" id="recentToggle" data-recent-toggle="estimates">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-clock mr-2 text-orange-500 text-sm"></i>最近編集
+                </h3>
+                <i class="fas fa-chevron-down text-gray-400 text-xs transition-transform duration-200" id="recentToggleIcon" data-recent-chevron="estimates"></i>
+              </div>
+              <div id="recentEstimates" class="p-2 space-y-1 max-h-48 overflow-y-auto" data-recent-body="estimates">
+                {/* 動的に生成 */}
+              </div>
+            </div>
+            
+            {/* 見積一覧 */}
             <div class="bg-white rounded-lg shadow">
-              <div class="p-3 border-b bg-gray-50">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-clock mr-2 text-orange-500"></i>最近編集
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-file-invoice mr-2 text-blue-600 text-sm"></i>見積一覧
                 </h3>
               </div>
-              <div id="recentEstimates" class="p-2 space-y-1 max-h-48 overflow-y-auto">
-                {/* 動的に生成 */}
+              <div class="p-2">
+                <div id="sidebarEstimateList" class="max-h-[calc(100vh-220px)] overflow-y-auto space-y-1">
+                  {/* 動的に生成 */}
+                </div>
               </div>
             </div>
           </div>
@@ -6491,6 +6825,7 @@ app.get('/estimates', async (c) => {
                   <button type="button" id="deleteEstimateBtn" class="hidden bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-sm">
                     <i class="fas fa-trash-alt mr-1"></i>削除
                   </button>
+                  <span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>
                   <button type="button" id="saveEstimateBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold">
                     <i class="fas fa-save mr-1"></i>保存
                   </button>
@@ -6500,7 +6835,7 @@ app.get('/estimates', async (c) => {
                 </div>
               </div>
 
-              <form id="estimateForm" class="p-6">
+              <form id="estimateForm" class="p-6" data-track-unsaved="true">
                 {/* 基本情報 */}
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                   <div class="md:col-span-2 lg:col-span-1">
@@ -6694,7 +7029,7 @@ app.get('/estimates', async (c) => {
                 <option value="">全カテゴリ</option>
               </select>
             </div>
-            <div id="productList" class="max-h-96 overflow-y-auto space-y-2">
+            <div id="productList" class="max-h-[calc(100vh-260px)] overflow-y-auto space-y-2 pb-12">
               {/* 動的に生成 */}
             </div>
           </div>
@@ -6703,6 +7038,8 @@ app.get('/estimates', async (c) => {
 
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
+        ${taxRateHelpers}
+        ${recentAccordionScript}
         // 状態管理
         var currentEstimateId = null;
         var originalEstimateStatus = null;  // 編集開始時のステータス（警告用）
@@ -7216,6 +7553,11 @@ app.get('/estimates', async (c) => {
           // 明細行描画
           tbody.innerHTML = items.map(function(item, index) {
             var amount = item.quantity * item.unit_price;
+            var rateValue = normalizeTaxRate(item.tax_rate, 10);
+            var customRateOption = '';
+            if (rateValue !== 10 && rateValue !== 8 && rateValue !== 0) {
+              customRateOption = '<option value="' + rateValue + '" selected>' + rateValue + '%</option>';
+            }
             
             if (showRetail) {
               // 上代表記あり
@@ -7234,9 +7576,10 @@ app.get('/estimates', async (c) => {
                 '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
                 '<td class="px-2 py-2">' +
                 '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-                '<option value="10"' + (item.tax_rate == 10 ? ' selected' : '') + '>10%</option>' +
-                '<option value="8"' + (item.tax_rate == 8 ? ' selected' : '') + '>8%</option>' +
-                '<option value="0"' + (item.tax_rate == 0 ? ' selected' : '') + '>0%</option>' +
+                customRateOption +
+                '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
                 '</select></td>' +
                 '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
                 '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
@@ -7256,9 +7599,10 @@ app.get('/estimates', async (c) => {
                 '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
                 '<td class="px-2 py-2">' +
                 '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-                '<option value="10"' + (item.tax_rate == 10 ? ' selected' : '') + '>10%</option>' +
-                '<option value="8"' + (item.tax_rate == 8 ? ' selected' : '') + '>8%</option>' +
-                '<option value="0"' + (item.tax_rate == 0 ? ' selected' : '') + '>0%</option>' +
+                customRateOption +
+                '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
                 '</select></td>' +
                 '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
                 '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
@@ -7328,7 +7672,7 @@ app.get('/estimates', async (c) => {
             subtotal += amount;
             
             // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = (item.tax_rate !== null && item.tax_rate !== undefined) ? parseFloat(item.tax_rate) : 10;
+            var rate = normalizeTaxRate(item.tax_rate, 10);
             if (!taxByRate[rate]) taxByRate[rate] = 0;
             taxByRate[rate] += Math.floor(amount * rate / 100);
           });
@@ -7414,13 +7758,15 @@ app.get('/estimates', async (c) => {
           // 最小ロットがあれば数量に設定（なければ既存値または1）
           var quantity = product.min_lot || items[currentItemIndex].quantity || 1;
           
+          var category = categories.find(function(c) { return c.id == product.category_id; }) || null;
+          var resolvedTaxRate = resolveLineTaxRate({ product: product, category: category, fallback: 10 });
           items[currentItemIndex] = {
             product_id: product.id,
             product_name: product.product_name,
             quantity: quantity,
             unit_price: product.unit_price || 0,
             retail_price: product.retail_price || 0,
-            tax_rate: product.tax_rate || 10,
+            tax_rate: resolvedTaxRate,
             item_notes: product.remarks || '',  // 商品マスタの備考をitem_notesに転記
             unit: product.unit || '個'  // 単位も保持
           };
@@ -7698,6 +8044,7 @@ app.get('/estimates', async (c) => {
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
+            if (window.SmartBill) window.SmartBill.resetFormTracking();
             await loadEstimates();
             await loadRecentEstimates();
             renderSidebarEstimates();
@@ -8109,38 +8456,45 @@ app.get('/invoices', async (c) => {
           </div>
           
           {/* 左サイドバー（展開時） */}
-          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden">
+          <div id="sidebarExpanded" class="w-80 flex-shrink-0 hidden sticky top-4 self-start" data-subsidebar="invoices">
+            {/* 検索 */}
             <div class="bg-white rounded-lg shadow mb-4">
-              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-file-invoice-dollar mr-2 text-indigo-500"></i>請求書一覧
-                </h3>
-                <div class="flex gap-2">
-                  <button id="backToTableBtn" class="text-xs text-blue-600 hover:text-blue-800" title="一覧に戻る">
-                    <i class="fas fa-th-list"></i>
+              <div class="p-3">
+                <div class="flex items-center justify-between mb-2">
+                  <button id="backToTableBtn" class="text-sm text-slate-700 hover:text-slate-900" title="一覧に戻る">
+                    <i class="fas fa-th-list mr-1"></i>一覧に戻る
                   </button>
-                  <button id="collapseSidebarBtn" class="text-xs text-gray-500 hover:text-gray-700" title="サイドバーを閉じる">
-                    <i class="fas fa-chevron-left"></i>
+                  <button id="collapseSidebarBtn" class="text-sm text-slate-700 hover:text-slate-900" title="サイドバーを閉じる">
+                    <i class="fas fa-times mr-1"></i>閉じる
                   </button>
                 </div>
-              </div>
-              <div class="p-2">
                 <input type="text" id="sidebarSearch" placeholder="検索..." 
-                  class="w-full border rounded px-2 py-1 text-sm mb-2" />
-                <div id="sidebarInvoiceList" class="max-h-64 overflow-y-auto space-y-1">
-                  {/* 動的に生成 */}
-                </div>
+                  class="w-full border rounded px-2 py-1 text-sm" />
+              </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow mb-4" id="recentInvoicesSection">
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between cursor-pointer" id="recentToggle" data-recent-toggle="invoices">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-clock mr-2 text-orange-500 text-sm"></i>最近編集
+                </h3>
+                <i class="fas fa-chevron-down text-gray-400 text-xs transition-transform duration-200" id="recentToggleIcon" data-recent-chevron="invoices"></i>
+              </div>
+              <div id="recentInvoices" class="p-2 space-y-1 max-h-48 overflow-y-auto" data-recent-body="invoices">
+                {/* 動的に生成 */}
               </div>
             </div>
             
             <div class="bg-white rounded-lg shadow">
-              <div class="p-3 border-b bg-gray-50">
-                <h3 class="font-bold text-sm text-gray-700">
-                  <i class="fas fa-clock mr-2 text-orange-500"></i>最近編集
+              <div class="p-3 border-b bg-gray-50 flex items-center justify-between">
+                <h3 class="text-slate-700 text-sm font-medium">
+                  <i class="fas fa-file-invoice-dollar mr-2 text-indigo-600 text-sm"></i>請求書一覧
                 </h3>
               </div>
-              <div id="recentInvoices" class="p-2 space-y-1 max-h-48 overflow-y-auto">
-                {/* 動的に生成 */}
+              <div class="p-2">
+                <div id="sidebarInvoiceList" class="max-h-[calc(100vh-220px)] overflow-y-auto space-y-1">
+                  {/* 動的に生成 */}
+                </div>
               </div>
             </div>
           </div>
@@ -8163,6 +8517,7 @@ app.get('/invoices', async (c) => {
                   <button type="button" id="deleteInvoiceBtn" class="hidden bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-sm">
                     <i class="fas fa-trash-alt mr-1"></i>削除
                   </button>
+                  <span id="pageUnsavedIndicator" class="text-sm text-red-600 font-semibold hidden">●未保存</span>
                   <button type="button" id="saveInvoiceBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold">
                     <i class="fas fa-save mr-1"></i>保存
                   </button>
@@ -8172,7 +8527,7 @@ app.get('/invoices', async (c) => {
                 </div>
               </div>
 
-              <form id="invoiceForm" class="p-6">
+              <form id="invoiceForm" class="p-6" data-track-unsaved="true">
                 {/* 基本情報 */}
                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                   <div>
@@ -8328,7 +8683,12 @@ app.get('/invoices', async (c) => {
                 <div class="mb-6 p-4 bg-blue-50 rounded-lg">
                   <h3 class="font-bold text-gray-700 mb-3 flex items-center justify-between">
                     <span><i class="fas fa-university mr-2 text-blue-600"></i>振込先</span>
-                    <span id="bankAccountSelectedCount" class="text-xs text-gray-500 font-semibold">振込先：0/3</span>
+                    <span class="flex items-center gap-2">
+                      <span id="invoiceBankAccountLimitHint" class="hidden text-sm text-red-600 font-semibold">
+                        ※上限3件です。選択を外すと追加できます。
+                      </span>
+                      <span id="bankAccountSelectedCount" class="text-xs text-gray-500 font-semibold">振込先：0/3</span>
+                    </span>
                   </h3>
                   <div id="bankAccountLimitNote" class="text-sm text-red-600 hidden"></div>
                   <div id="bankAccountsEmpty" class="text-sm text-gray-600">
@@ -8350,6 +8710,32 @@ app.get('/invoices', async (c) => {
                     class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"></textarea>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 商品選択モーダル */}
+      <div id="productModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+          <div class="p-4 border-b bg-gray-50 flex items-center justify-between">
+            <h3 class="font-bold text-gray-800">
+              <i class="fas fa-box mr-2 text-blue-600"></i>商品を選択
+            </h3>
+            <button type="button" id="closeProductModal" class="text-gray-500 hover:text-gray-700">
+              <i class="fas fa-times text-xl"></i>
+            </button>
+          </div>
+          <div class="p-4">
+            <div class="flex gap-2 mb-4">
+              <input type="text" id="productSearchInput" placeholder="商品名・コードで検索..."
+                class="flex-1 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />
+              <select id="productCategoryFilter" class="border rounded-lg px-3 py-2">
+                <option value="">全カテゴリ</option>
+              </select>
+            </div>
+            <div id="productList" class="max-h-[calc(100vh-260px)] overflow-y-auto space-y-2 pb-12">
+              {/* 動的に生成 */}
             </div>
           </div>
         </div>
@@ -8485,14 +8871,19 @@ app.get('/invoices', async (c) => {
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
         ${bankAccountTypeHelpers}
+        ${taxRateHelpers}
+        ${recentAccordionScript}
         // 状態管理
         var currentInvoiceId = null;
         var originalInvoiceStatus = null;
         var invoices = [];
         var clients = [];
+        var products = [];
+        var categories = [];
         var items = [];
         var formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
         var selectedClient = null;
+        var currentItemIndex = null;
         var bankAccounts = [];
         var selectedBankAccountIds = [];
         var BANK_ACCOUNT_SELECT_MAX = 3;
@@ -8821,8 +9212,17 @@ app.get('/invoices', async (c) => {
         function updateBankAccountSelectionCounter() {
           var count = normalizeBankAccountIds(selectedBankAccountIds).length;
           var counterEl = document.getElementById('bankAccountSelectedCount');
+          var hintEl = document.getElementById('invoiceBankAccountLimitHint');
           if (!counterEl) return;
           counterEl.textContent = '振込先：' + count + '/' + BANK_ACCOUNT_SELECT_MAX;
+          if (hintEl) {
+            var totalChoices = Array.isArray(bankAccounts) ? bankAccounts.length : 0;
+            if (count >= BANK_ACCOUNT_SELECT_MAX && totalChoices > BANK_ACCOUNT_SELECT_MAX) {
+              hintEl.classList.remove('hidden');
+            } else {
+              hintEl.classList.add('hidden');
+            }
+          }
         }
 
         function setBankAccountLimitNote(message, mode) {
@@ -8981,6 +9381,8 @@ app.get('/invoices', async (c) => {
           await Promise.all([
             loadInvoices(),
             loadClients(),
+            loadProducts(),
+            loadCategories(),
             loadRecentInvoices(),
             loadCompanyBankAccounts()
           ]);
@@ -9032,6 +9434,23 @@ app.get('/invoices', async (c) => {
             select.innerHTML = '<option value="">得意先を選択...</option>' +
               clients.map(function(c) {
                 return '<option value="' + c.id + '">' + c.client_name + '</option>';
+              }).join('');
+          }
+        }
+
+        async function loadProducts() {
+          var res = await axios.get('/api/products');
+          products = res.data;
+        }
+
+        async function loadCategories() {
+          var res = await axios.get('/api/categories');
+          categories = res.data;
+          var select = document.getElementById('productCategoryFilter');
+          if (select) {
+            select.innerHTML = '<option value="">全カテゴリ</option>' +
+              categories.map(function(c) {
+                return '<option value="' + c.id + '">' + c.category_name + '</option>';
               }).join('');
           }
         }
@@ -9391,7 +9810,7 @@ app.get('/invoices', async (c) => {
         
         // 明細行の管理
         function addItemRow(item) {
-          items.push(item || { delivery_id: null, delivery_date: '', product_name: '', quantity: 1, unit_price: 0, tax_rate: 10 });
+          items.push(item || { delivery_id: null, delivery_date: '', product_id: null, product_name: '', quantity: 1, unit_price: 0, tax_rate: 10 });
           renderItemsTable();
         }
         
@@ -9406,19 +9825,29 @@ app.get('/invoices', async (c) => {
           
           tbody.innerHTML = items.map(function(item, index) {
             var amount = item.quantity * item.unit_price;
+            var rateValue = normalizeTaxRate(item.tax_rate, 10);
+            var customRateOption = '';
+            if (rateValue !== 10 && rateValue !== 8 && rateValue !== 0) {
+              customRateOption = '<option value="' + rateValue + '" selected>' + rateValue + '%</option>';
+            }
             return '<tr class="border-b hover:bg-gray-50 item-row" data-index="' + index + '">' +
               '<td class="px-2 py-2 text-gray-500">' +
               '<span class="drag-handle mr-1" title="ドラッグで並び替え"><i class="fas fa-grip-vertical"></i></span>' +
               (index + 1) + '</td>' +
               '<td class="px-2 py-2"><input type="date" class="item-delivery-date w-full border rounded px-1 py-1 text-sm" value="' + (item.delivery_date || '') + '" /></td>' +
-              '<td class="px-2 py-2"><input type="text" class="item-product-name w-full border rounded px-2 py-1 text-sm" value="' + (item.product_name || '') + '" placeholder="品名を入力..." /></td>' +
+              '<td class="px-2 py-2">' +
+              '<div class="flex gap-1">' +
+              '<input type="text" class="item-product-name flex-1 border rounded px-2 py-1 text-sm" value="' + (item.product_name || '') + '" placeholder="品名を入力..." />' +
+              '<button type="button" class="select-product-btn bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded text-xs" data-index="' + index + '"><i class="fas fa-search"></i></button>' +
+              '</div></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-unit-price w-full border rounded px-2 py-1 text-sm text-right" value="' + item.unit_price + '" /></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
               '<td class="px-2 py-2">' +
               '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-              '<option value="10"' + (item.tax_rate == 10 ? ' selected' : '') + '>10%</option>' +
-              '<option value="8"' + (item.tax_rate == 8 ? ' selected' : '') + '>8%</option>' +
-              '<option value="0"' + (item.tax_rate == 0 ? ' selected' : '') + '>0%</option>' +
+              customRateOption +
+              '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+              '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+              '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
               '</select></td>' +
               '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
               '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
@@ -9468,6 +9897,12 @@ app.get('/invoices', async (c) => {
           tbody.querySelectorAll('.item-tax-rate').forEach(function(select, idx) {
             select.addEventListener('change', function() { items[idx].tax_rate = parseFloat(this.value); formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true; calculateTotals(); });
           });
+          tbody.querySelectorAll('.select-product-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              currentItemIndex = parseInt(this.getAttribute('data-index'));
+              openProductModal();
+            });
+          });
           tbody.querySelectorAll('.remove-item-btn').forEach(function(btn) {
             btn.addEventListener('click', function() {
               var idx = parseInt(this.getAttribute('data-index'));
@@ -9486,7 +9921,7 @@ app.get('/invoices', async (c) => {
             subtotal += amount;
             
             // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = (item.tax_rate !== null && item.tax_rate !== undefined) ? parseFloat(item.tax_rate) : 10;
+            var rate = normalizeTaxRate(item.tax_rate, 10);
             if (!taxByRate[rate]) taxByRate[rate] = 0;
             taxByRate[rate] += Math.floor(amount * rate / 100);
           });
@@ -9509,6 +9944,75 @@ app.get('/invoices', async (c) => {
           document.getElementById('taxBreakdown').innerHTML = taxBreakdownHtml;
           document.getElementById('taxDisplay').textContent = '¥' + totalTax.toLocaleString();
           document.getElementById('totalDisplay').textContent = '¥' + (subtotal + totalTax).toLocaleString();
+        }
+
+        // 商品モーダル（請求データ入力）
+        function openProductModal() {
+          document.getElementById('productModal').classList.remove('hidden');
+          renderProductList();
+        }
+
+        function closeProductModal() {
+          document.getElementById('productModal').classList.add('hidden');
+          currentItemIndex = null;
+        }
+
+        function renderProductList(search, categoryId) {
+          var filtered = products.filter(function(p) {
+            if (search && !p.product_name.includes(search) && !(p.product_code || '').includes(search)) return false;
+            if (categoryId && p.category_id != categoryId) return false;
+            return true;
+          });
+
+          var container = document.getElementById('productList');
+          if (filtered.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-center py-4">商品が見つかりません</p>';
+            return;
+          }
+
+          container.innerHTML = filtered.map(function(p) {
+            return '<div class="p-3 border rounded-lg hover:bg-blue-50 cursor-pointer product-item" data-id="' + p.id + '">' +
+              '<div class="flex justify-between">' +
+              '<span class="font-medium">' + p.product_name + '</span>' +
+              '<span class="text-sm text-gray-500">' + (p.product_code || '') + '</span>' +
+              '</div>' +
+              '<div class="text-sm text-gray-600 flex justify-between mt-1">' +
+              '<span>' + (p.category_name || '') + '</span>' +
+              '<span>¥' + (p.unit_price || 0).toLocaleString() + '</span>' +
+              '</div></div>';
+          }).join('');
+
+          container.querySelectorAll('.product-item').forEach(function(el) {
+            el.addEventListener('click', function() {
+              var productId = parseInt(this.getAttribute('data-id'));
+              selectProduct(productId);
+            });
+          });
+        }
+
+        function selectProduct(productId) {
+          var product = products.find(function(p) { return p.id === productId; });
+          if (!product || currentItemIndex === null) return;
+
+          var currentItem = items[currentItemIndex] || {};
+          var quantity = product.min_lot || currentItem.quantity || 1;
+
+          var category = categories.find(function(c) { return c.id == product.category_id; }) || null;
+          var resolvedTaxRate = resolveLineTaxRate({ product: product, category: category, fallback: 10 });
+          items[currentItemIndex] = {
+            delivery_id: currentItem.delivery_id || null,
+            delivery_date: currentItem.delivery_date || '',
+            product_id: product.id,
+            product_name: product.product_name,
+            quantity: quantity,
+            unit_price: product.unit_price || 0,
+            tax_rate: resolvedTaxRate
+          };
+
+          formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          closeProductModal();
+          renderItemsTable();
+          calculateTotals();
         }
         
         // フォーム表示制御
@@ -9607,7 +10111,7 @@ app.get('/invoices', async (c) => {
               product_name: item.product_name,
               quantity: item.quantity,
               unit_price: item.unit_price,
-              tax_rate: (item.tax_rate !== null && item.tax_rate !== undefined) ? item.tax_rate : 10
+              tax_rate: normalizeTaxRate(item.tax_rate, 10)
             };
           });
           
@@ -9721,6 +10225,7 @@ app.get('/invoices', async (c) => {
             }
             
             formChanged = false; if (window.SmartBill) window.SmartBill.formChanged = false;
+            if (window.SmartBill) window.SmartBill.resetFormTracking();
             await loadInvoices();
             await loadRecentInvoices();
             renderSidebarInvoices();
@@ -10267,6 +10772,18 @@ app.get('/invoices', async (c) => {
             updateFormHeaderTitle();
           });
           document.getElementById('addItemBtn').addEventListener('click', function() { addItemRow(); });
+
+          // 商品モーダル
+          document.getElementById('closeProductModal').addEventListener('click', closeProductModal);
+          document.getElementById('productModal').addEventListener('click', function(e) {
+            if (e.target === this) closeProductModal();
+          });
+          document.getElementById('productSearchInput').addEventListener('input', function() {
+            renderProductList(this.value, document.getElementById('productCategoryFilter').value);
+          });
+          document.getElementById('productCategoryFilter').addEventListener('change', function() {
+            renderProductList(document.getElementById('productSearchInput').value, this.value);
+          });
           
           // サイドバー
           document.getElementById('expandSidebarBtn').addEventListener('click', function() { toggleSidebar(false); });
@@ -10354,6 +10871,11 @@ app.get('/invoices', async (c) => {
           window.SmartBill.setupKeyboardShortcuts({
             saveCallback: function() { saveInvoice(); },
             escapeCallback: async function() {
+              var productModal = document.getElementById('productModal');
+              if (productModal && !productModal.classList.contains('hidden')) {
+                closeProductModal();
+                return;
+              }
               var deliveryDetailModal = document.getElementById('deliveryDetailModal');
               var batchModal = document.getElementById('batchCreateModal');
               if (!deliveryDetailModal.classList.contains('hidden')) {
