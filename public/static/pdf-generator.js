@@ -39,38 +39,57 @@
     return parts[0] + parts[1].padStart(2, '0') + parts[2].padStart(2, '0');
   }
   
+  function normalizeTaxRate(rateLike) {
+    if (rateLike === null || rateLike === undefined) return 0;
+    if (typeof rateLike === 'number' && Number.isFinite(rateLike)) return rateLike;
+    var s = String(rateLike).trim();
+    if (!s) return 0;
+    var m = s.match(/(\d+(?:\.\d+)?)/);
+    if (!m) return 0;
+    var n = Number(m[1]);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function calculateTaxBreakdown(items) {
-    var subtotal10 = 0;
-    var subtotal8 = 0;
-    var subtotal0 = 0;
+    var baseByRate = {};
+    var subtotal = 0;
     
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
       var amount = item.amount || (item.quantity * item.unit_price);
-      var rate = item.tax_rate;
+      var rate = normalizeTaxRate(item.tax_rate);
+      var key = String(rate);
       
-      if (rate === 8) {
-        subtotal8 += amount;
-      } else if (rate === 0) {
-        subtotal0 += amount;
-      } else {
-        subtotal10 += amount;
-      }
+      subtotal += amount;
+      baseByRate[key] = (baseByRate[key] || 0) + amount;
     }
     
-    var tax10 = Math.floor(subtotal10 * 0.1);
-    var tax8 = Math.floor(subtotal8 * 0.08);
+    var taxByRate = Object.keys(baseByRate)
+      .map(function(key) {
+        var rate = Number(key);
+        var base = baseByRate[key] || 0;
+        var tax = Math.floor(base * (rate / 100));
+        return { rate: rate, base: base, tax: tax };
+      })
+      .sort(function(a, b) { return b.rate - a.rate; });
+    
+    var totalTax = taxByRate.reduce(function(sum, row) { return sum + row.tax; }, 0);
+    var tax10Row = taxByRate.find(function(row) { return row.rate === 10; }) || { tax: 0, base: 0 };
+    var tax8Row = taxByRate.find(function(row) { return row.rate === 8; }) || { tax: 0, base: 0 };
+    var tax0Row = taxByRate.find(function(row) { return row.rate === 0; }) || { tax: 0, base: 0 };
     
     return {
-      subtotal: subtotal10 + subtotal8 + subtotal0,
-      subtotal10: subtotal10,
-      subtotal8: subtotal8,
-      subtotal0: subtotal0,
-      tax10Amount: tax10,
-      tax8Amount: tax8,
-      hasTax8: subtotal8 > 0,
-      hasTax0: subtotal0 > 0,
-      total: subtotal10 + subtotal8 + subtotal0 + tax10 + tax8
+      subtotal: subtotal,
+      subtotal10: tax10Row.base,
+      subtotal8: tax8Row.base,
+      subtotal0: tax0Row.base,
+      tax10Amount: tax10Row.tax,
+      tax8Amount: tax8Row.tax,
+      hasTax8: tax8Row.base > 0,
+      hasTax0: tax0Row.base > 0,
+      taxByRate: taxByRate,
+      totalTax: totalTax,
+      total: subtotal + totalTax
     };
   }
   
@@ -326,12 +345,11 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     // 常にtaxBreakdownの計算結果を使用
     var summaryHtml = '<table class="summary-table"><tr><td class="label">小計</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td>';
-    if (taxBreakdown.tax10Amount > 0) {
-      summaryHtml += '<td class="label">消費税10%</td><td class="value">&yen;' + formatNumber(taxBreakdown.tax10Amount) + '</td>';
-    }
-    if (taxBreakdown.hasTax8) {
-      summaryHtml += '<td class="label">消費税8%</td><td class="value">&yen;' + formatNumber(taxBreakdown.tax8Amount) + '</td>';
-    }
+    taxBreakdown.taxByRate.forEach(function(row) {
+      if (row.rate > 0 && row.base > 0) {
+        summaryHtml += '<td class="label">消費税' + row.rate + '%</td><td class="value">&yen;' + formatNumber(row.tax) + '</td>';
+      }
+    });
     summaryHtml += '<td class="label total-label">合計</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr></table>';
     
     // 税列があるので注記は不要
@@ -378,8 +396,14 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
-    if (companyInfo.tel) html += 'TEL: ' + escapeHtml(companyInfo.tel) + '<br>';
-    if (companyInfo.fax) html += 'FAX: ' + escapeHtml(companyInfo.fax) + '<br>';
+    var telFax = [];
+    if (companyInfo.tel) telFax.push('TEL: ' + escapeHtml(companyInfo.tel));
+    if (companyInfo.fax) telFax.push('FAX: ' + escapeHtml(companyInfo.fax));
+    if (telFax.length > 0) {
+      var telFaxText = telFax.join(' ');
+      var telFaxFont = telFaxText.length > 28 ? ' style="font-size:7pt;"' : '';
+      html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
+    }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
     if (companyInfo.website) html += 'HP: ' + escapeHtml(companyInfo.website) + '<br>';
     if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
@@ -411,7 +435,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var clientInfo = data.clientInfo || {};
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
     var taxBreakdown = calculateTaxBreakdown(data.items || []);
-    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
+    var totalTax = taxBreakdown.totalTax || 0;
     
     var logoHtml = '';
     if (companyInfo.logo_url && companyInfo.logo_url.startsWith('data:image')) {
@@ -482,8 +506,14 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
-    if (companyInfo.tel) html += 'TEL: ' + escapeHtml(companyInfo.tel) + '<br>';
-    if (companyInfo.fax) html += 'FAX: ' + escapeHtml(companyInfo.fax) + '<br>';
+    var telFax = [];
+    if (companyInfo.tel) telFax.push('TEL: ' + escapeHtml(companyInfo.tel));
+    if (companyInfo.fax) telFax.push('FAX: ' + escapeHtml(companyInfo.fax));
+    if (telFax.length > 0) {
+      var telFaxText = telFax.join(' ');
+      var telFaxFont = telFaxText.length > 28 ? ' style="font-size:7pt;"' : '';
+      html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
+    }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
     if (companyInfo.website) html += 'HP: ' + escapeHtml(companyInfo.website) + '<br>';
     if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
@@ -522,7 +552,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var clientInfo = data.clientInfo || {};
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
     var taxBreakdown = calculateTaxBreakdown(data.items || []);
-    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
+    var totalTax = taxBreakdown.totalTax || 0;
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
     var honorific = clientInfo.is_individual ? '様' : '御中';
@@ -570,7 +600,11 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var telFax = [];
     if (companyInfo.tel) telFax.push('TEL: ' + escapeHtml(companyInfo.tel));
     if (companyInfo.fax) telFax.push('FAX: ' + escapeHtml(companyInfo.fax));
-    if (telFax.length > 0) html += telFax.join(' ') + '<br>';
+    if (telFax.length > 0) {
+      var telFaxText = telFax.join(' ');
+      var telFaxFont = telFaxText.length > 26 ? ' style="font-size:6.5pt;"' : '';
+      html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
+    }
     if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div>';
     html += '</div></div>';
@@ -630,7 +664,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var format = data.delivery_note_format || 'half';
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
     var taxBreakdown = calculateTaxBreakdown(data.items || []);
-    var totalTax = (taxBreakdown.tax10Amount || 0) + (taxBreakdown.tax8Amount || 0);
+    var totalTax = taxBreakdown.totalTax || 0;
     
     var logoHtml = '';
     if (companyInfo.logo_url && companyInfo.logo_url.startsWith('data:image')) {
@@ -718,8 +752,14 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
-    if (companyInfo.tel) html += 'TEL: ' + escapeHtml(companyInfo.tel) + '<br>';
-    if (companyInfo.fax) html += 'FAX: ' + escapeHtml(companyInfo.fax) + '<br>';
+    var telFax = [];
+    if (companyInfo.tel) telFax.push('TEL: ' + escapeHtml(companyInfo.tel));
+    if (companyInfo.fax) telFax.push('FAX: ' + escapeHtml(companyInfo.fax));
+    if (telFax.length > 0) {
+      var telFaxText = telFax.join(' ');
+      var telFaxFont = telFaxText.length > 28 ? ' style="font-size:7pt;"' : '';
+      html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
+    }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
     if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div></div></div>';
