@@ -1,6 +1,6 @@
 /**
  * SmartBill PDF Generator
- * 見積書・請求書・納品書のPDF出力機能
+ * 隕狗ｩ肴嶌繝ｻ隲区ｱよ嶌繝ｻ邏榊刀譖ｸ縺ｮPDF蜃ｺ蜉帶ｩ溯・
  */
 
 (function() {
@@ -15,14 +15,14 @@
     if (!dateStr) return '';
     const parts = dateStr.split('-');
     if (parts.length !== 3) return dateStr;
-    return parts[0] + '年' + parseInt(parts[1]) + '月' + parseInt(parts[2]) + '日';
+    return parts[0] + '蟷ｴ' + parseInt(parts[1]) + '譛・ + parseInt(parts[2]) + '譌･';
   }
   
   function formatDateShort(dateStr) {
     if (!dateStr) return '';
     const parts = dateStr.split('-');
     if (parts.length !== 3) return dateStr;
-    return parseInt(parts[1]) + '月' + parseInt(parts[2]) + '日';
+    return parseInt(parts[1]) + '譛・ + parseInt(parts[2]) + '譌･';
   }
   
   function formatDateYYYYMM(dateStr) {
@@ -189,7 +189,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var has8Percent = items.some(function(item) { return item.tax_rate === 8; });
     
     var html = '<table class="items-table"><thead><tr>';
-    html += '<th class="col-date">日付</th><th class="col-name">品目</th><th class="col-qty">数量</th><th class="col-price">単価</th><th class="col-amount">金額</th><th class="col-tax">税</th>';
+    html += '<th class="col-date">譌･莉・/th><th class="col-name">蜩∫岼</th><th class="col-qty">謨ｰ驥・/th><th class="col-price">蜊倅ｾ｡</th><th class="col-amount">驥鷹｡・/th><th class="col-tax">遞・/th>';
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < items.length; i++) {
@@ -197,8 +197,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       var amount = item.amount || (item.quantity * item.unit_price);
       var dateStr = item.delivery_date ? formatDateShort(item.delivery_date) : '';
       var taxRate = item.tax_rate !== null && item.tax_rate !== undefined ? item.tax_rate : 10;
-      // 税率表示: 10, 8, 0 のみ（%なし、税列があるので*不要）
-      var taxDisplay = taxRate === 8 ? '8' : (taxRate === 0 ? '0' : '10');
+      // 遞守紫陦ｨ遉ｺ: 10, 8, 0 縺ｮ縺ｿ・・縺ｪ縺励∫ｨ主・縺後≠繧九・縺ｧ*荳崎ｦ・ｼ・      var taxDisplay = taxRate === 8 ? '8' : (taxRate === 0 ? '0' : '10');
       
       html += '<tr>';
       html += '<td class="col-date">' + dateStr + '</td>';
@@ -219,33 +218,31 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     return { html: html, has8Percent: has8Percent };
   }
   
-  // 税列なしテーブル（見積書・納品書用） - 備考列追加
+  // 遞主・縺ｪ縺励ユ繝ｼ繝悶Ν・郁ｦ狗ｩ肴嶌繝ｻ邏榊刀譖ｸ逕ｨ・・- 蛯呵・・霑ｽ蜉
   function generateSimpleItemsTableHTML(items, minRows, showRetail) {
     var actualMinRows = items.length >= 10 ? items.length : Math.min(minRows || 10, 15 - items.length);
     
     var html = '<table class="items-table"><thead><tr>';
     if (showRetail) {
-      // 上代・下代表示あり
-      html += '<th style="width:5%">No</th><th style="width:32%">品名・摘要</th><th style="width:8%">数量</th><th style="width:12%">上代</th><th style="width:12%">下代</th><th style="width:14%">金額</th><th style="width:17%">備考</th>';
+      // 荳贋ｻ｣繝ｻ荳倶ｻ｣陦ｨ遉ｺ縺ゅｊ
+      html += '<th style="width:5%">No</th><th style="width:32%">蜩∝錐繝ｻ鞫倩ｦ・/th><th style="width:8%">謨ｰ驥・/th><th style="width:12%">荳贋ｻ｣</th><th style="width:12%">荳倶ｻ｣</th><th style="width:14%">驥鷹｡・/th><th style="width:17%">蛯呵・/th>';
     } else {
-      // 通常表示（単価・金額・備考）
-      html += '<th style="width:6%">No</th><th style="width:40%">品名・摘要</th><th style="width:10%">数量</th><th style="width:12%">単価</th><th style="width:14%">金額</th><th style="width:18%">備考</th>';
+      // 騾壼ｸｸ陦ｨ遉ｺ・亥腰萓｡繝ｻ驥鷹｡阪・蛯呵・ｼ・      html += '<th style="width:6%">No</th><th style="width:40%">蜩∝錐繝ｻ鞫倩ｦ・/th><th style="width:10%">謨ｰ驥・/th><th style="width:12%">蜊倅ｾ｡</th><th style="width:14%">驥鷹｡・/th><th style="width:18%">蛯呵・/th>';
     }
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
       var amount = item.amount || (item.quantity * item.unit_price);
-      // 品名と備考（item_notes）を結合表示
+      // 蜩∝錐縺ｨ蛯呵・ｼ・tem_notes・峨ｒ邨仙粋陦ｨ遉ｺ
       var productCell = escapeHtml(item.product_name || '');
       if (item.item_notes) {
         productCell += '<br><span style="font-size:8pt;color:#666;">' + escapeHtml(item.item_notes) + '</span>';
       }
-      // 備考列（notes）
-      var notesCell = escapeHtml(item.notes || '');
+      // 蛯呵・・・・otes・・      var notesCell = escapeHtml(item.notes || '');
       
       if (showRetail) {
-        // 上代・下代表示
+        // 荳贋ｻ｣繝ｻ荳倶ｻ｣陦ｨ遉ｺ
         var retailPrice = item.retail_price || 0;
         html += '<tr><td style="text-align:center;vertical-align:top">' + (i + 1) + '</td><td style="vertical-align:top">' + productCell + '</td><td style="text-align:center;vertical-align:top">' + formatNumber(item.quantity) + '</td><td style="text-align:right;vertical-align:top">' + (retailPrice > 0 ? '&yen;' + formatNumber(retailPrice) : '-') + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(item.unit_price) + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(amount) + '</td><td style="vertical-align:top;font-size:8pt;">' + notesCell + '</td></tr>';
       } else {
@@ -266,12 +263,11 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     return html;
   }
   
-  // 税列ありテーブル（請求書用 - 現在未使用だが互換性のため残す）
-  function generateItemsTableHTML(items, minRows) {
+  // 遞主・縺ゅｊ繝・・繝悶Ν・郁ｫ区ｱよ嶌逕ｨ - 迴ｾ蝨ｨ譛ｪ菴ｿ逕ｨ縺縺御ｺ呈鋤諤ｧ縺ｮ縺溘ａ谿九☆・・  function generateItemsTableHTML(items, minRows) {
     var actualMinRows = items.length >= 10 ? items.length : Math.min(minRows || 10, 15 - items.length);
     
     var html = '<table class="items-table"><thead><tr>';
-    html += '<th style="width:6%">No</th><th style="width:44%">品名・摘要</th><th style="width:10%">数量</th><th style="width:14%">単価</th><th style="width:16%">金額</th><th style="width:10%">税率</th>';
+    html += '<th style="width:6%">No</th><th style="width:44%">蜩∝錐繝ｻ鞫倩ｦ・/th><th style="width:10%">謨ｰ驥・/th><th style="width:14%">蜊倅ｾ｡</th><th style="width:16%">驥鷹｡・/th><th style="width:10%">遞守紫</th>';
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < items.length; i++) {
@@ -291,126 +287,13 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   }
   
   /**
-   * 請求書「振込先」ブロック（縦積み固定・既存CSSのみ使用・インラインスタイルでnowrap/フォント調整）
-   * <!-- BANK_BLOCK_V3 -->
-   */
-  function buildInvoiceBankBlockHtml(bankInfo, bankInfoList) {
-    var accounts = Array.isArray(bankInfoList) ? bankInfoList.slice(0, 3) : [];
-    if (accounts.length === 0 && bankInfo.bank_name) {
-      accounts = [bankInfo];
-    }
-    if (accounts.length === 0) return '';
-
-    function normalizeHolder(s) {
-      return String(s || '').trim().replace(/[\s　]+/g, '');
-    }
-    function getBranch(b) { return b.branch_name || b.bank_branch || ''; }
-    function getTypeLabel(b) { return b.account_type_label || (b.account_type === 'current' ? '当座' : '普通'); }
-    function visualLen(s) {
-      var str = String(s || '');
-      var n = 0;
-      for (var i = 0; i < str.length; i++) {
-        n += str.charCodeAt(i) < 128 ? 1 : 2;
-      }
-      return n;
-    }
-
-    var gap = '　';
-    var maxLen = 0;
-    accounts.forEach(function(b) {
-      var bank = b.bank_name || '';
-      var branch = getBranch(b);
-      var type = getTypeLabel(b);
-      var num = b.account_number || '';
-      var holder = b.account_holder || '';
-      maxLen = Math.max(maxLen, visualLen(bank + gap + branch));
-      maxLen = Math.max(maxLen, visualLen(type + gap + num));
-      maxLen = Math.max(maxLen, visualLen(holder));
-      if (accounts.length > 1) {
-        var oneLineLen = visualLen(bank + (branch ? gap + branch : '') + gap + type + gap + num);
-        maxLen = Math.max(maxLen, oneLineLen);
-      }
-    });
-
-    var fontSize = 10;
-    var letterSpacing = '';
-    if (maxLen <= 24) fontSize = 10;
-    else if (maxLen <= 28) fontSize = 9;
-    else if (maxLen <= 32) fontSize = 8;
-    else if (maxLen <= 36) fontSize = 7.5;
-    else {
-      fontSize = 7;
-      letterSpacing = '; letter-spacing: -0.2px';
-    }
-    var rowStyle = 'white-space:nowrap;font-size:' + fontSize + 'pt;text-align:left' + letterSpacing;
-
-    var groups = [];
-    var currentGroup = [];
-    for (var i = 0; i < accounts.length; i++) {
-      var n = normalizeHolder(accounts[i].account_holder);
-      if (currentGroup.length === 0 || normalizeHolder(currentGroup[currentGroup.length - 1].account_holder) === n) {
-        currentGroup.push(accounts[i]);
-      } else {
-        groups.push(currentGroup);
-        currentGroup = [accounts[i]];
-      }
-    }
-    if (currentGroup.length > 0) groups.push(currentGroup);
-
-    var html = '<!-- BANK_BLOCK_V3 --><div class="bank-box"><div class="bank-header" style="writing-mode:vertical-rl;text-orientation:upright;width:10mm;min-width:10mm;flex-shrink:0;display:flex;align-items:center;justify-content:center;">振込先</div>';
-    var bodyStyle = 'line-height:1.25';
-    html += '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">';
-
-    if (accounts.length === 1) {
-      var b = accounts[0];
-      var bankName = escapeHtml(b.bank_name || '');
-      var branchName = escapeHtml(getBranch(b));
-      var typeNum = escapeHtml(getTypeLabel(b)) + gap + escapeHtml(b.account_number || '');
-      var holderVal = escapeHtml(b.account_holder || '');
-      html += '<div class="bank-body" style="' + bodyStyle + '">';
-      html += '<div style="' + rowStyle + '">' + bankName + (branchName ? gap + branchName : '') + '</div>';
-      html += '<div style="' + rowStyle + '">' + typeNum + '</div>';
-      html += '<div style="' + rowStyle + '">口座名義：' + holderVal + '</div>';
-      html += '</div>';
-    } else {
-      var sep = '<div style="border-top:0.75px solid #D0D6DE;margin:1mm 2mm 0;"></div>';
-      for (var g = 0; g < groups.length; g++) {
-        var group = groups[g];
-        for (var i = 0; i < group.length; i++) {
-          if (g > 0 || i > 0) html += sep;
-          var b = group[i];
-          var bankName = escapeHtml(b.bank_name || '');
-          var branchName = escapeHtml(getBranch(b));
-          var typeNum = escapeHtml(getTypeLabel(b)) + gap + escapeHtml(b.account_number || '');
-          var oneLine = bankName + (branchName ? gap + branchName : '') + gap + typeNum;
-          html += '<div class="bank-body" style="' + bodyStyle + '">';
-          html += '<div style="' + rowStyle + '">' + oneLine + '</div>';
-          if (groups.length > 1) {
-            html += '<div style="' + rowStyle + '">' + escapeHtml(b.account_holder || '') + '</div>';
-          }
-          html += '</div>';
-        }
-        if (groups.length === 1 && group[0].account_holder) {
-          html += '<div class="bank-body" style="' + bodyStyle + '">';
-          html += '<div style="' + rowStyle + '">' + escapeHtml(group[0].account_holder) + '</div>';
-          html += '</div>';
-        }
-      }
-    }
-
-    html += '</div></div>';
-    html += '<div class="bank-note">※振込手数料は御社のご負担にてお願い申し上げます。</div>';
-    return html;
-  }
-
-  /**
-   * 請求書HTML生成
-   * レイアウト:
-   * [タイトル行] 左50%:請求先情報 | 右50%:「請求書」タイトル背景色
-   * [メイン行]   左50%:下記の通り+金額+振込先 | 右50%:請求日等+自社情報
-   * [明細テーブル]
-   * [合計]
-   * [備考]
+   * 隲区ｱよ嶌HTML逕滓・
+   * 繝ｬ繧､繧｢繧ｦ繝・
+   * [繧ｿ繧､繝医Ν陦珪 蟾ｦ50%:隲区ｱょ・諠・ｱ | 蜿ｳ50%:縲瑚ｫ区ｱよ嶌縲阪ち繧､繝医Ν閭梧勹濶ｲ
+   * [繝｡繧､繝ｳ陦珪   蟾ｦ50%:荳玖ｨ倥・騾壹ｊ+驥鷹｡・謖ｯ霎ｼ蜈・| 蜿ｳ50%:隲区ｱよ律遲・閾ｪ遉ｾ諠・ｱ
+   * [譏守ｴｰ繝・・繝悶Ν]
+   * [蜷郁ｨ・
+   * [蛯呵ゾ
    */
   function generateInvoiceHTML(data) {
     var companyInfo = data.companyInfo || {};
@@ -430,64 +313,79 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
-    var honorific = clientInfo.is_individual ? '様' : '御中';
+    var honorific = clientInfo.is_individual ? '讒・ : '蠕｡荳ｭ';
     
-    var bankHtml = buildInvoiceBankBlockHtml(bankInfo, data.bankInfoList);
+    var bankHtml = '';
+    if (bankInfoList.length === 0 && bankInfo.bank_name) {
+      bankInfoList = [bankInfo];
+    }
+    if (bankInfoList.length > 0) {
+      bankHtml = '<div class="bank-box"><div class="bank-header">謖ｯ霎ｼ蜈・/div>';
+      bankInfoList.forEach(function(b, idx) {
+        bankHtml += '<div class="bank-body">';
+        bankHtml += escapeHtml(b.bank_name || '') + ' ' + escapeHtml(b.bank_branch || '') + '<br>';
+        var typeLabel = b.account_type_label || (b.account_type === 'current' ? '蠖灘ｺｧ' : '譎ｮ騾・);
+        bankHtml += escapeHtml(typeLabel) + ' ' + escapeHtml(b.account_number || '') + '<br>';
+        bankHtml += '蜿｣蠎ｧ蜷咲ｾｩ: ' + escapeHtml(b.account_holder || '');
+        bankHtml += '</div>';
+        if (idx < bankInfoList.length - 1) {
+          bankHtml += '<div style="height:6px;"></div>';
+        }
+      });
+      bankHtml += '</div>';
+      bankHtml += '<div class="bank-note">窶ｻ謖ｯ霎ｼ謇区焚譁吶・蠕｡遉ｾ縺ｮ縺碑ｲ諡・↓縺ｦ縺企｡倥＞逕ｳ縺嶺ｸ翫￡縺ｾ縺吶・/div>';
+    }
     
     var itemsResult = generateInvoiceItemsTableHTML(data.items || [], 6);
     var taxBreakdown = calculateTaxBreakdown(data.items || []);
     
-    // 常にtaxBreakdownの計算結果を使用
-    var summaryHtml = '<table class="summary-table"><tr><td class="label">小計</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td>';
+    // 蟶ｸ縺ｫtaxBreakdown縺ｮ險育ｮ礼ｵ先棡繧剃ｽｿ逕ｨ
+    var summaryHtml = '<table class="summary-table"><tr><td class="label">蟆剰ｨ・/td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td>';
     taxBreakdown.taxByRate.forEach(function(row) {
       if (row.rate > 0 && row.base > 0) {
-        summaryHtml += '<td class="label">消費税' + row.rate + '%</td><td class="value">&yen;' + formatNumber(row.tax) + '</td>';
+        summaryHtml += '<td class="label">豸郁ｲｻ遞・ + row.rate + '%</td><td class="value">&yen;' + formatNumber(row.tax) + '</td>';
       }
     });
-    summaryHtml += '<td class="label total-label">合計</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr></table>';
+    summaryHtml += '<td class="label total-label">蜷郁ｨ・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr></table>';
     
-    // 税列があるので注記は不要
-    var taxNote = '<div class="tax-note"></div>';
+    // 遞主・縺後≠繧九・縺ｧ豕ｨ險倥・荳崎ｦ・    var taxNote = '<div class="tax-note"></div>';
     
-    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>請求書</title><style>' + getPrintStyles() + '</style></head><body>';
-    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">印刷 / PDF保存</button><button class="print-btn print-btn-secondary" onclick="window.close()">閉じる</button></div>';
+    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>隲区ｱよ嶌</title><style>' + getPrintStyles() + '</style></head><body>';
+    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">蜊ｰ蛻ｷ / PDF菫晏ｭ・/button><button class="print-btn print-btn-secondary" onclick="window.close()">髢峨§繧・/button></div>';
     html += '<div class="print-container">';
     
-    // タイトル行: 左に請求先、右にタイトル
+    // 繧ｿ繧､繝医Ν陦・ 蟾ｦ縺ｫ隲区ｱょ・縲∝承縺ｫ繧ｿ繧､繝医Ν
     html += '<div class="title-row">';
     html += '<div class="title-left"><div class="client-in-title">';
-    if (clientInfo.postal_code) html += '<div class="client-postal">〒' + escapeHtml(clientInfo.postal_code) + '</div>';
+    if (clientInfo.postal_code) html += '<div class="client-postal">縲・ + escapeHtml(clientInfo.postal_code) + '</div>';
     if (clientAddress) html += '<div class="client-address">' + escapeHtml(clientAddress) + '</div>';
     if (clientInfo.building_name) html += '<div class="client-address">' + escapeHtml(clientInfo.building_name) + '</div>';
     html += '<div class="client-name">' + escapeHtml(data.client_name || '') + '<span class="client-suffix">' + honorific + '</span></div>';
     html += '</div></div>';
-    html += '<div class="title-right"><span class="title-text">請　求　書</span></div>';
+    html += '<div class="title-right"><span class="title-text">隲九豎ゅ譖ｸ</span></div>';
     html += '</div>';
     
-    // メイン行: 左右2カラム
-    // 左50%: 下記の通り + 金額 + 振込先
-    // 右40%: 請求日等 + 自社情報（右寄せ、間を空ける）
-    html += '<div class="main-section">';
+    // 繝｡繧､繝ｳ陦・ 蟾ｦ蜿ｳ2繧ｫ繝ｩ繝
+    // 蟾ｦ50%: 荳玖ｨ倥・騾壹ｊ + 驥鷹｡・+ 謖ｯ霎ｼ蜈・    // 蜿ｳ40%: 隲区ｱよ律遲・+ 閾ｪ遉ｾ諠・ｱ・亥承蟇・○縲・俣繧堤ｩｺ縺代ｋ・・    html += '<div class="main-section">';
     
-    // 左カラム（50%）- 触らない
-    html += '<div class="left-col">';
-    html += '<div class="billing-intro">下記の通り、ご請求申し上げます。</div>';
-    html += '<div class="billing-box"><span class="billing-label">ご請求金額<span class="billing-label-sub">（税込）</span></span><span class="billing-value">&yen;' + formatNumber(data.total_amount) + '</span></div>';
+    // 蟾ｦ繧ｫ繝ｩ繝・・0%・・ 隗ｦ繧峨↑縺・    html += '<div class="left-col">';
+    html += '<div class="billing-intro">荳玖ｨ倥・騾壹ｊ縲√＃隲区ｱら筏縺嶺ｸ翫￡縺ｾ縺吶・/div>';
+    html += '<div class="billing-box"><span class="billing-label">縺碑ｫ区ｱる≡鬘・span class="billing-label-sub">・育ｨ手ｾｼ・・/span></span><span class="billing-value">&yen;' + formatNumber(data.total_amount) + '</span></div>';
     html += bankHtml;
     html += '</div>';
     
-    // 右カラム（40%）- 請求日等 + 自社情報
+    // 蜿ｳ繧ｫ繝ｩ繝・・0%・・ 隲区ｱよ律遲・+ 閾ｪ遉ｾ諠・ｱ
     html += '<div class="right-col">';
     html += '<div class="doc-info">';
-    html += '<div class="doc-info-row"><span class="doc-info-label">請求日:</span><span class="doc-info-value">' + formatDate(data.invoice_date) + '</span></div>';
-    if (data.payment_due_date) html += '<div class="doc-info-row"><span class="doc-info-label">お支払期限:</span><span class="doc-info-value">' + formatDate(data.payment_due_date) + '</span></div>';
-    html += '<div class="doc-info-row"><span class="doc-info-label">請求書No:</span><span class="doc-info-value">' + escapeHtml(data.invoice_no || '') + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">隲区ｱよ律:</span><span class="doc-info-value">' + formatDate(data.invoice_date) + '</span></div>';
+    if (data.payment_due_date) html += '<div class="doc-info-row"><span class="doc-info-label">縺頑髪謇墓悄髯・</span><span class="doc-info-value">' + formatDate(data.payment_due_date) + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">隲区ｱよ嶌No:</span><span class="doc-info-value">' + escapeHtml(data.invoice_no || '') + '</span></div>';
     html += '</div>';
     html += '<div class="company-block">';
     html += logoHtml;
     html += '<div class="company-name-wrap"><div class="company-name">' + escapeHtml(companyInfo.company_name || '') + '</div>' + stampHtml + '</div>';
     html += '<div class="company-info">';
-    if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
+    if (companyInfo.postal_code) html += '縲・ + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
     var telFax = [];
@@ -500,19 +398,17 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
     if (companyInfo.website) html += 'HP: ' + escapeHtml(companyInfo.website) + '<br>';
-    if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
+    if (companyInfo.invoice_registration_no) html += '逋ｻ骭ｲ逡ｪ蜿ｷ: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div></div></div>';
     
     html += '</div>'; // main-section end
     
-    // 明細テーブル
+    // 譏守ｴｰ繝・・繝悶Ν
     html += itemsResult.html;
     
-    // 合計行
-    html += '<div class="items-footer">' + taxNote + summaryHtml + '</div>';
+    // 蜷郁ｨ郁｡・    html += '<div class="items-footer">' + taxNote + summaryHtml + '</div>';
     
-    // 備考
-    html += '<div class="notes-box"><div class="notes-title">備考</div><div class="notes-content">' + (data.notes ? escapeHtml(data.notes) : '&nbsp;<br>&nbsp;<br>&nbsp;') + '</div></div>';
+    // 蛯呵・    html += '<div class="notes-box"><div class="notes-title">蛯呵・/div><div class="notes-content">' + (data.notes ? escapeHtml(data.notes) : '&nbsp;<br>&nbsp;<br>&nbsp;') + '</div></div>';
     
     html += '<div class="page-num">1 / 1</div>';
     html += '</div></body></html>';
@@ -521,9 +417,8 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   }
   
   /**
-   * 見積書HTML生成
-   * レイアウト: 請求書と同様だが、振込先・消費税表示なし、背景色は緑
-   */
+   * 隕狗ｩ肴嶌HTML逕滓・
+   * 繝ｬ繧､繧｢繧ｦ繝・ 隲区ｱよ嶌縺ｨ蜷梧ｧ倥□縺後∵険霎ｼ蜈医・豸郁ｲｻ遞手｡ｨ遉ｺ縺ｪ縺励∬レ譎ｯ濶ｲ縺ｯ邱・   */
   function generateEstimateHTML(data) {
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
@@ -543,61 +438,54 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
-    var honorific = clientInfo.is_individual ? '様' : '御中';
+    var honorific = clientInfo.is_individual ? '讒・ : '蠕｡荳ｭ';
     
-    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>御見積書</title><style>' + getPrintStyles() + '</style></head><body>';
-    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">印刷 / PDF保存</button><button class="print-btn print-btn-secondary" onclick="window.close()">閉じる</button></div>';
+    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>蠕｡隕狗ｩ肴嶌</title><style>' + getPrintStyles() + '</style></head><body>';
+    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">蜊ｰ蛻ｷ / PDF菫晏ｭ・/button><button class="print-btn print-btn-secondary" onclick="window.close()">髢峨§繧・/button></div>';
     html += '<div class="print-container">';
     
-    // タイトル行: 左に見積先（住所含む）、右にタイトル（緑背景）
-    html += '<div class="title-row">';
+    // 繧ｿ繧､繝医Ν陦・ 蟾ｦ縺ｫ隕狗ｩ榊・・井ｽ乗園蜷ｫ繧・峨∝承縺ｫ繧ｿ繧､繝医Ν・育ｷ題レ譎ｯ・・    html += '<div class="title-row">';
     html += '<div class="title-left"><div class="client-in-title">';
-    if (clientInfo.postal_code) html += '<div class="client-postal">〒' + escapeHtml(clientInfo.postal_code) + '</div>';
+    if (clientInfo.postal_code) html += '<div class="client-postal">縲・ + escapeHtml(clientInfo.postal_code) + '</div>';
     if (clientAddress) html += '<div class="client-address">' + escapeHtml(clientAddress) + '</div>';
     if (clientInfo.building_name) html += '<div class="client-address">' + escapeHtml(clientInfo.building_name) + '</div>';
     html += '<div class="client-name">' + escapeHtml(data.client_name || '') + '<span class="client-suffix">' + honorific + '</span></div>';
     html += '</div></div>';
-    html += '<div class="title-right estimate"><span class="title-text">御 見 積 書</span></div>';
+    html += '<div class="title-right estimate"><span class="title-text">蠕｡ 隕・遨・譖ｸ</span></div>';
     html += '</div>';
     
-    // メイン行
-    html += '<div class="main-section">';
+    // 繝｡繧､繝ｳ陦・    html += '<div class="main-section">';
     
-    // 左カラム
+    // 蟾ｦ繧ｫ繝ｩ繝
     html += '<div class="left-col">';
-    // 5行分空ける（約15mm）
-    html += '<div style="height:15mm;"></div>';
-    // 件名を目立つように表示（太字・大きめ）
-    if (data.subject) html += '<div style="font-size:11pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:2mm;">件名: ' + escapeHtml(data.subject) + '</div>';
-    // 件名の下1行空けて「下記の通り」
-    html += '<div class="billing-intro" style="margin-top:4mm;">下記の通り、お見積り申し上げます。</div>';
-    // 表示設定に合わせた金額
-    var billingAmount = showTax ? taxBreakdown.total : taxBreakdown.subtotal;
-    html += '<div class="billing-box"><span class="billing-label estimate">御見積金額</span><span class="billing-value">&yen;' + formatNumber(billingAmount) + '</span></div>';
+    // 5陦悟・遨ｺ縺代ｋ・育ｴ・5mm・・    html += '<div style="height:15mm;"></div>';
+    // 莉ｶ蜷阪ｒ逶ｮ遶九▽繧医≧縺ｫ陦ｨ遉ｺ・亥､ｪ蟄励・螟ｧ縺阪ａ・・    if (data.subject) html += '<div style="font-size:11pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:2mm;">莉ｶ蜷・ ' + escapeHtml(data.subject) + '</div>';
+    // 莉ｶ蜷阪・荳・陦檎ｩｺ縺代※縲御ｸ玖ｨ倥・騾壹ｊ縲・    html += '<div class="billing-intro" style="margin-top:4mm;">荳玖ｨ倥・騾壹ｊ縲√♀隕狗ｩ阪ｊ逕ｳ縺嶺ｸ翫￡縺ｾ縺吶・/div>';
+    // 陦ｨ遉ｺ險ｭ螳壹↓蜷医ｏ縺帙◆驥鷹｡・    var billingAmount = showTax ? taxBreakdown.total : taxBreakdown.subtotal;
+    html += '<div class="billing-box"><span class="billing-label estimate">蠕｡隕狗ｩ埼≡鬘・/span><span class="billing-value">&yen;' + formatNumber(billingAmount) + '</span></div>';
     
-    // 受渡場所・取引条件・納期（データがあれば表示）
-    var hasTerms = data.delivery_place || data.payment_terms || data.delivery_date_text;
+    // 蜿玲ｸ｡蝣ｴ謇繝ｻ蜿門ｼ墓擅莉ｶ繝ｻ邏肴悄・医ョ繝ｼ繧ｿ縺後≠繧後・陦ｨ遉ｺ・・    var hasTerms = data.delivery_place || data.payment_terms || data.delivery_date_text;
     if (hasTerms) {
       html += '<div class="terms-box" style="margin-top:3mm;font-size:9pt;">';
-      if (data.delivery_place) html += '<div style="margin-bottom:1mm;">受渡場所: ' + escapeHtml(data.delivery_place) + '</div>';
-      if (data.payment_terms) html += '<div style="margin-bottom:1mm;">取引条件: ' + escapeHtml(data.payment_terms) + '</div>';
-      if (data.delivery_date_text) html += '<div>納　　期: ' + escapeHtml(data.delivery_date_text) + '</div>';
+      if (data.delivery_place) html += '<div style="margin-bottom:1mm;">蜿玲ｸ｡蝣ｴ謇: ' + escapeHtml(data.delivery_place) + '</div>';
+      if (data.payment_terms) html += '<div style="margin-bottom:1mm;">蜿門ｼ墓擅莉ｶ: ' + escapeHtml(data.payment_terms) + '</div>';
+      if (data.delivery_date_text) html += '<div>邏阪縲譛・ ' + escapeHtml(data.delivery_date_text) + '</div>';
       html += '</div>';
     }
     html += '</div>';
     
-    // 右カラム
+    // 蜿ｳ繧ｫ繝ｩ繝
     html += '<div class="right-col">';
     html += '<div class="doc-info">';
-    html += '<div class="doc-info-row"><span class="doc-info-label">見積日:</span><span class="doc-info-value">' + formatDate(data.estimate_date) + '</span></div>';
-    if (data.valid_until) html += '<div class="doc-info-row"><span class="doc-info-label">有効期限:</span><span class="doc-info-value">' + formatDate(data.valid_until) + '</span></div>';
-    html += '<div class="doc-info-row"><span class="doc-info-label">見積書No:</span><span class="doc-info-value">' + escapeHtml(data.estimate_no || '') + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">隕狗ｩ肴律:</span><span class="doc-info-value">' + formatDate(data.estimate_date) + '</span></div>';
+    if (data.valid_until) html += '<div class="doc-info-row"><span class="doc-info-label">譛牙柑譛滄剞:</span><span class="doc-info-value">' + formatDate(data.valid_until) + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">隕狗ｩ肴嶌No:</span><span class="doc-info-value">' + escapeHtml(data.estimate_no || '') + '</span></div>';
     html += '</div>';
     html += '<div class="company-block">';
     html += logoHtml;
     html += '<div class="company-name-wrap"><div class="company-name">' + escapeHtml(companyInfo.company_name || '') + '</div>' + stampHtml + '</div>';
     html += '<div class="company-info">';
-    if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
+    if (companyInfo.postal_code) html += '縲・ + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
     var telFax = [];
@@ -610,29 +498,26 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
     if (companyInfo.website) html += 'HP: ' + escapeHtml(companyInfo.website) + '<br>';
-    if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
+    if (companyInfo.invoice_registration_no) html += '逋ｻ骭ｲ逡ｪ蜿ｷ: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div></div></div>';
     
     html += '</div>'; // main-section end
     
-    // 明細テーブル（税列なし、上代・下代対応、備考列あり）
-    html += generateSimpleItemsTableHTML(data.items || [], 10, data.show_retail);
+    // 譏守ｴｰ繝・・繝悶Ν・育ｨ主・縺ｪ縺励∽ｸ贋ｻ｣繝ｻ荳倶ｻ｣蟇ｾ蠢懊∝ｙ閠・・縺ゅｊ・・    html += generateSimpleItemsTableHTML(data.items || [], 10, data.show_retail);
     
-    // 合計行（税表示設定に合わせて表示）
-    if (showTax) {
+    // 蜷郁ｨ郁｡鯉ｼ育ｨ手｡ｨ遉ｺ險ｭ螳壹↓蜷医ｏ縺帙※陦ｨ遉ｺ・・    if (showTax) {
       html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
-        '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
-        '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
-        '<tr><td class="label total-label" style="background:#16a34a;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
+        '<tr><td class="label">蟆剰ｨ茨ｼ育ｨ取栢・・/td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label">豸郁ｲｻ遞・/td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#16a34a;">蜷郁ｨ茨ｼ育ｨ手ｾｼ・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
         '</table></div>';
     } else {
       html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
-        '<tr><td class="label total-label" style="background:#16a34a;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#16a34a;">蜷郁ｨ茨ｼ育ｨ取栢・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
         '</table></div>';
     }
     
-    // 備考
-    html += '<div class="notes-box"><div class="notes-title">備考</div><div class="notes-content">' + (data.notes ? escapeHtml(data.notes) : '&nbsp;<br>&nbsp;<br>&nbsp;') + '</div></div>';
+    // 蛯呵・    html += '<div class="notes-box"><div class="notes-title">蛯呵・/div><div class="notes-content">' + (data.notes ? escapeHtml(data.notes) : '&nbsp;<br>&nbsp;<br>&nbsp;') + '</div></div>';
     
     html += '<div class="page-num">1 / 1</div>';
     html += '</div></body></html>';
@@ -640,8 +525,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     return html;
   }
   
-  // 納品書2分割用：1つの半ページを生成（見積書・請求書と同じレイアウト）
-  function generateDeliveryHalfSection(data, pageItems, isCopy, pageNum, totalPages, isLastPage) {
+  // 邏榊刀譖ｸ2蛻・牡逕ｨ・・縺､縺ｮ蜊翫・繝ｼ繧ｸ繧堤函謌撰ｼ郁ｦ狗ｩ肴嶌繝ｻ隲区ｱよ嶌縺ｨ蜷後§繝ｬ繧､繧｢繧ｦ繝茨ｼ・  function generateDeliveryHalfSection(data, pageItems, isCopy, pageNum, totalPages, isLastPage) {
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
@@ -649,10 +533,9 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var totalTax = taxBreakdown.totalTax || 0;
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
-    var honorific = clientInfo.is_individual ? '様' : '御中';
-    var ROWS_PER_HALF = 7;  // 2分割時の固定行数（TEL/FAXを1行にまとめて2行増）
-    
-    // 印鑑HTML
+    var honorific = clientInfo.is_individual ? '讒・ : '蠕｡荳ｭ';
+    var ROWS_PER_HALF = 7;  // 2蛻・牡譎ゅ・蝗ｺ螳夊｡梧焚・・EL/FAX繧・陦後↓縺ｾ縺ｨ繧√※2陦悟｢暦ｼ・    
+    // 蜊ｰ髑践TML
     var stampHtml = '';
     if (companyInfo.stamp_url && companyInfo.stamp_url.startsWith('data:image')) {
       stampHtml = '<img src="' + companyInfo.stamp_url + '" style="position:absolute;left:calc(100% - 1em);top:-1mm;width:10mm;height:10mm;opacity:0.85;" alt="">';
@@ -660,37 +543,34 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     var html = '<div class="half-page">';
     
-    // タイトル行：左に納品先（住所含む）、右にタイトル（他ドキュメントと同じ）
-    html += '<div class="title-row" style="margin-bottom:3mm;min-height:12mm;">';
+    // 繧ｿ繧､繝医Ν陦鯉ｼ壼ｷｦ縺ｫ邏榊刀蜈茨ｼ井ｽ乗園蜷ｫ繧・峨∝承縺ｫ繧ｿ繧､繝医Ν・井ｻ悶ラ繧ｭ繝･繝｡繝ｳ繝医→蜷後§・・    html += '<div class="title-row" style="margin-bottom:3mm;min-height:12mm;">';
     html += '<div class="title-left" style="width:55%;font-size:8pt;">';
-    if (clientInfo.postal_code) html += '<div>〒' + escapeHtml(clientInfo.postal_code) + '</div>';
+    if (clientInfo.postal_code) html += '<div>縲・ + escapeHtml(clientInfo.postal_code) + '</div>';
     if (clientAddress) html += '<div>' + escapeHtml(clientAddress) + '</div>';
     if (clientInfo.building_name) html += '<div>' + escapeHtml(clientInfo.building_name) + '</div>';
     html += '<div style="font-size:11pt;font-weight:bold;margin-top:2mm;">' + escapeHtml(data.client_name || '') + '<span style="font-size:10pt;margin-left:3px;">' + honorific + '</span></div>';
     html += '</div>';
-    html += '<div class="title-right delivery" style="width:45%;"><span class="title-text">納 品 書' + (isCopy ? '（控）' : '') + '</span></div>';
+    html += '<div class="title-right delivery" style="width:45%;"><span class="title-text">邏・蜩・譖ｸ' + (isCopy ? '・域而・・ : '') + '</span></div>';
     html += '</div>';
     
-    // メインセクション
+    // 繝｡繧､繝ｳ繧ｻ繧ｯ繧ｷ繝ｧ繝ｳ
     html += '<div class="main-section" style="margin-bottom:2mm;">';
     
-    // 左カラム（件名 + 下記の通り）- 4行分下げる
-    html += '<div class="left-col" style="width:48%;">';
+    // 蟾ｦ繧ｫ繝ｩ繝・井ｻｶ蜷・+ 荳玖ｨ倥・騾壹ｊ・・ 4陦悟・荳九￡繧・    html += '<div class="left-col" style="width:48%;">';
     html += '<div style="height:12mm;"></div>';
-    if (data.subject) html += '<div style="font-size:9pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:1mm;">件名: ' + escapeHtml(data.subject) + '</div>';
-    html += '<div style="font-size:8pt;margin-top:1mm;">下記の通り納品いたします。</div>';
+    if (data.subject) html += '<div style="font-size:9pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:1mm;">莉ｶ蜷・ ' + escapeHtml(data.subject) + '</div>';
+    html += '<div style="font-size:8pt;margin-top:1mm;">荳玖ｨ倥・騾壹ｊ邏榊刀縺・◆縺励∪縺吶・/div>';
     html += '</div>';
     
-    // 右カラム（見積書・請求書と同じ配置）
-    html += '<div class="right-col" style="width:45%;">';
+    // 蜿ｳ繧ｫ繝ｩ繝・郁ｦ狗ｩ肴嶌繝ｻ隲区ｱよ嶌縺ｨ蜷後§驟咲ｽｮ・・    html += '<div class="right-col" style="width:45%;">';
     html += '<div class="doc-info" style="font-size:8pt;margin-bottom:1mm;">';
-    html += '<div>納品日: ' + formatDate(data.delivery_date) + ' 納品No: ' + escapeHtml(data.delivery_no || '') + '</div>';
+    html += '<div>邏榊刀譌･: ' + formatDate(data.delivery_date) + ' 邏榊刀No: ' + escapeHtml(data.delivery_no || '') + '</div>';
     html += '</div>';
     html += '<div style="position:relative;display:inline-block;font-size:9pt;font-weight:bold;">' + escapeHtml(companyInfo.company_name || '') + stampHtml + '</div>';
     html += '<div style="font-size:7pt;line-height:1.4;">';
-    if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
+    if (companyInfo.postal_code) html += '縲・ + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
-    // TELとFAXを1行にまとめる
+    // TEL縺ｨFAX繧・陦後↓縺ｾ縺ｨ繧√ｋ
     var telFax = [];
     if (companyInfo.tel) telFax.push('TEL: ' + escapeHtml(companyInfo.tel));
     if (companyInfo.fax) telFax.push('FAX: ' + escapeHtml(companyInfo.fax));
@@ -699,13 +579,12 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       var telFaxFont = telFaxText.length > 26 ? ' style="font-size:6.5pt;"' : '';
       html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
     }
-    if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
+    if (companyInfo.invoice_registration_no) html += '逋ｻ骭ｲ逡ｪ蜿ｷ: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div>';
     html += '</div></div>';
     
-    // 明細テーブル（税列なし、固定7行、備考列あり）
-    html += '<table class="items-table" style="font-size:7.5pt;"><thead><tr>';
-    html += '<th style="width:5%">No</th><th style="width:40%">品名</th><th style="width:9%">数量</th><th style="width:12%">単価</th><th style="width:14%">金額</th><th style="width:20%">備考</th>';
+    // 譏守ｴｰ繝・・繝悶Ν・育ｨ主・縺ｪ縺励∝崋螳・陦後∝ｙ閠・・縺ゅｊ・・    html += '<table class="items-table" style="font-size:7.5pt;"><thead><tr>';
+    html += '<th style="width:5%">No</th><th style="width:40%">蜩∝錐</th><th style="width:9%">謨ｰ驥・/th><th style="width:12%">蜊倅ｾ｡</th><th style="width:14%">驥鷹｡・/th><th style="width:20%">蛯呵・/th>';
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < pageItems.length; i++) {
@@ -715,36 +594,32 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       html += '<tr><td style="text-align:center">' + item.rowNum + '</td><td>' + escapeHtml(item.product_name || '') + '</td><td style="text-align:center">' + formatNumber(item.quantity) + '</td><td style="text-align:right">&yen;' + formatNumber(item.unit_price) + '</td><td style="text-align:right">&yen;' + formatNumber(amount) + '</td><td style="font-size:7pt;">' + notesCell + '</td></tr>';
     }
     
-    // 固定行数まで空行を埋める
-    for (var j = pageItems.length; j < ROWS_PER_HALF; j++) {
+    // 蝗ｺ螳夊｡梧焚縺ｾ縺ｧ遨ｺ陦後ｒ蝓九ａ繧・    for (var j = pageItems.length; j < ROWS_PER_HALF; j++) {
       html += '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>';
     }
     html += '</tbody></table>';
     
-    // 合計（最終ページのみ表示、税なし）
-    if (isLastPage) {
+    // 蜷郁ｨ茨ｼ域怙邨ゅ・繝ｼ繧ｸ縺ｮ縺ｿ陦ｨ遉ｺ縲∫ｨ弱↑縺暦ｼ・    if (isLastPage) {
       html += '<div style="display:flex;justify-content:flex-end;margin-top:1mm;">';
       html += '<table class="summary-table" style="font-size:8pt;">';
       if (showTax) {
-        html += '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
-        html += '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>';
-        html += '<tr><td class="label total-label" style="background:#9333ea;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>';
+        html += '<tr><td class="label">蟆剰ｨ茨ｼ育ｨ取栢・・/td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
+        html += '<tr><td class="label">豸郁ｲｻ遞・/td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>';
+        html += '<tr><td class="label total-label" style="background:#9333ea;">蜷郁ｨ茨ｼ育ｨ手ｾｼ・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>';
       } else {
-        html += '<tr><td class="label total-label" style="background:#9333ea;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
+        html += '<tr><td class="label total-label" style="background:#9333ea;">蜷郁ｨ茨ｼ育ｨ取栢・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>';
       }
       html += '</table></div>';
     }
     
-    // 備考欄（最終ページのみ、6行制限）
-    if (isLastPage) {
+    // 蛯呵・ｬ・ｼ域怙邨ゅ・繝ｼ繧ｸ縺ｮ縺ｿ縲・陦悟宛髯撰ｼ・    if (isLastPage) {
       html += '<div style="margin-top:2mm;padding:1.5mm 2mm;border:1px solid #ccc;background:#fafafa;height:21mm;overflow:hidden;">';
-      html += '<div style="font-weight:bold;font-size:7.5pt;margin-bottom:1mm;">備考</div>';
+      html += '<div style="font-weight:bold;font-size:7.5pt;margin-bottom:1mm;">蛯呵・/div>';
       html += '<div style="font-size:7.5pt;white-space:pre-wrap;line-height:1.4;max-height:17mm;overflow:hidden;">' + (data.notes ? escapeHtml(data.notes) : '') + '</div>';
       html += '</div>';
     }
     
-    // ページ番号（複数ページの場合）
-    if (totalPages > 1) {
+    // 繝壹・繧ｸ逡ｪ蜿ｷ・郁､・焚繝壹・繧ｸ縺ｮ蝣ｴ蜷茨ｼ・    if (totalPages > 1) {
       html += '<div style="text-align:right;font-size:7pt;color:#666;margin-top:1mm;">' + pageNum + ' / ' + totalPages + '</div>';
     }
     
@@ -772,21 +647,17 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
-    var honorific = clientInfo.is_individual ? '様' : '御中';
+    var honorific = clientInfo.is_individual ? '讒・ : '蠕｡荳ｭ';
     
-    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>納品書</title><style>' + getPrintStyles() + '</style></head><body>';
-    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">印刷 / PDF保存</button><button class="print-btn print-btn-secondary" onclick="window.close()">閉じる</button></div>';
+    var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>邏榊刀譖ｸ</title><style>' + getPrintStyles() + '</style></head><body>';
+    html += '<div class="print-buttons"><button class="print-btn print-btn-primary" onclick="window.print()">蜊ｰ蛻ｷ / PDF菫晏ｭ・/button><button class="print-btn print-btn-secondary" onclick="window.close()">髢峨§繧・/button></div>';
     
-    // 2分割形式
-    if (format === 'half') {
+    // 2蛻・牡蠖｢蠑・    if (format === 'half') {
       var items = data.items || [];
-      var ROWS_PER_HALF = 7;  // 2分割時の固定行数（TEL/FAXを1行にまとめて2行増）
+      var ROWS_PER_HALF = 7;  // 2蛻・牡譎ゅ・蝗ｺ螳夊｡梧焚・・EL/FAX繧・陦後↓縺ｾ縺ｨ繧√※2陦悟｢暦ｼ・      
+      // 繧｢繧､繝・Β縺後↑縺・ｴ蜷医ｂ1繝壹・繧ｸ逕滓・・育ｩｺ縺ｮ譏守ｴｰ・・      var totalPages = items.length > 0 ? Math.ceil(items.length / ROWS_PER_HALF) : 1;
       
-      // アイテムがない場合も1ページ生成（空の明細）
-      var totalPages = items.length > 0 ? Math.ceil(items.length / ROWS_PER_HALF) : 1;
-      
-      // アイテムに通し番号を付与
-      var numberedItems = items.map(function(item, idx) {
+      // 繧｢繧､繝・Β縺ｫ騾壹＠逡ｪ蜿ｷ繧剃ｻ倅ｸ・      var numberedItems = items.map(function(item, idx) {
         return Object.assign({}, item, { rowNum: idx + 1 });
       });
       
@@ -796,11 +667,10 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
         var isLastPage = pageNum === totalPages;
         
         html += '<div class="print-container">';
-        html += generateDeliveryHalfSection(data, pageItems, false, pageNum, totalPages, isLastPage);  // 上：納品書
-        html += generateDeliveryHalfSection(data, pageItems, true, pageNum, totalPages, isLastPage);   // 下：納品書（控）
-        html += '</div>';
+        html += generateDeliveryHalfSection(data, pageItems, false, pageNum, totalPages, isLastPage);  // 荳奇ｼ夂ｴ榊刀譖ｸ
+        html += generateDeliveryHalfSection(data, pageItems, true, pageNum, totalPages, isLastPage);   // 荳具ｼ夂ｴ榊刀譖ｸ・域而・・        html += '</div>';
         
-        // 最終ページ以外は改ページ
+        // 譛邨ゅ・繝ｼ繧ｸ莉･螟悶・謾ｹ繝壹・繧ｸ
         if (!isLastPage) {
           html += '<div style="page-break-after: always;"></div>';
         }
@@ -810,40 +680,36 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       return html;
     }
     
-    // 1枚もの形式（見積書・請求書と同じレイアウト）
-    html += '<div class="print-container">';
+    // 1譫壹ｂ縺ｮ蠖｢蠑擾ｼ郁ｦ狗ｩ肴嶌繝ｻ隲区ｱよ嶌縺ｨ蜷後§繝ｬ繧､繧｢繧ｦ繝茨ｼ・    html += '<div class="print-container">';
     
-    // タイトル行: 左に納品先（住所含む）、右にタイトル
+    // 繧ｿ繧､繝医Ν陦・ 蟾ｦ縺ｫ邏榊刀蜈茨ｼ井ｽ乗園蜷ｫ繧・峨∝承縺ｫ繧ｿ繧､繝医Ν
     html += '<div class="title-row">';
     html += '<div class="title-left"><div class="client-in-title">';
-    if (clientInfo.postal_code) html += '<div class="client-postal">〒' + escapeHtml(clientInfo.postal_code) + '</div>';
+    if (clientInfo.postal_code) html += '<div class="client-postal">縲・ + escapeHtml(clientInfo.postal_code) + '</div>';
     if (clientAddress) html += '<div class="client-address">' + escapeHtml(clientAddress) + '</div>';
     if (clientInfo.building_name) html += '<div class="client-address">' + escapeHtml(clientInfo.building_name) + '</div>';
     html += '<div class="client-name">' + escapeHtml(data.client_name || '') + '<span class="client-suffix">' + honorific + '</span></div>';
     html += '</div></div>';
-    html += '<div class="title-right delivery"><span class="title-text">納　品　書</span></div>';
+    html += '<div class="title-right delivery"><span class="title-text">邏阪蜩√譖ｸ</span></div>';
     html += '</div>';
     
-    // メインセクション（見積書・請求書と同じレイアウト）
-    html += '<div class="main-section">';
+    // 繝｡繧､繝ｳ繧ｻ繧ｯ繧ｷ繝ｧ繝ｳ・郁ｦ狗ｩ肴嶌繝ｻ隲区ｱよ嶌縺ｨ蜷後§繝ｬ繧､繧｢繧ｦ繝茨ｼ・    html += '<div class="main-section">';
     
-    // 左カラム（件名のみ、「下記の通り」は明細の上に移動）
-    html += '<div class="left-col">';
+    // 蟾ｦ繧ｫ繝ｩ繝・井ｻｶ蜷阪・縺ｿ縲√御ｸ玖ｨ倥・騾壹ｊ縲阪・譏守ｴｰ縺ｮ荳翫↓遘ｻ蜍包ｼ・    html += '<div class="left-col">';
     html += '<div style="height:15mm;"></div>';
-    if (data.subject) html += '<div style="font-size:11pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:2mm;">件名: ' + escapeHtml(data.subject) + '</div>';
+    if (data.subject) html += '<div style="font-size:11pt;font-weight:bold;border-bottom:1px solid #333;padding-bottom:2mm;">莉ｶ蜷・ ' + escapeHtml(data.subject) + '</div>';
     html += '</div>';
     
-    // 右カラム（見積書・請求書と同じ配置）
-    html += '<div class="right-col">';
+    // 蜿ｳ繧ｫ繝ｩ繝・郁ｦ狗ｩ肴嶌繝ｻ隲区ｱよ嶌縺ｨ蜷後§驟咲ｽｮ・・    html += '<div class="right-col">';
     html += '<div class="doc-info">';
-    html += '<div class="doc-info-row"><span class="doc-info-label">納品日:</span><span class="doc-info-value">' + formatDate(data.delivery_date) + '</span></div>';
-    html += '<div class="doc-info-row"><span class="doc-info-label">納品書No:</span><span class="doc-info-value">' + escapeHtml(data.delivery_no || '') + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">邏榊刀譌･:</span><span class="doc-info-value">' + formatDate(data.delivery_date) + '</span></div>';
+    html += '<div class="doc-info-row"><span class="doc-info-label">邏榊刀譖ｸNo:</span><span class="doc-info-value">' + escapeHtml(data.delivery_no || '') + '</span></div>';
     html += '</div>';
     html += '<div class="company-block">';
     html += logoHtml;
     html += '<div class="company-name-wrap"><div class="company-name">' + escapeHtml(companyInfo.company_name || '') + '</div>' + stampHtml + '</div>';
     html += '<div class="company-info">';
-    if (companyInfo.postal_code) html += '〒' + escapeHtml(companyInfo.postal_code) + '<br>';
+    if (companyInfo.postal_code) html += '縲・ + escapeHtml(companyInfo.postal_code) + '<br>';
     if (companyAddress) html += escapeHtml(companyAddress) + '<br>';
     if (companyInfo.building_name) html += escapeHtml(companyInfo.building_name) + '<br>';
     var telFax = [];
@@ -855,32 +721,29 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       html += '<span' + telFaxFont + '>' + telFaxText + '</span><br>';
     }
     if (companyInfo.email) html += 'Mail: ' + escapeHtml(companyInfo.email) + '<br>';
-    if (companyInfo.invoice_registration_no) html += '登録番号: ' + escapeHtml(companyInfo.invoice_registration_no);
+    if (companyInfo.invoice_registration_no) html += '逋ｻ骭ｲ逡ｪ蜿ｷ: ' + escapeHtml(companyInfo.invoice_registration_no);
     html += '</div></div></div>';
     
     html += '</div>'; // main-section end
     
-    // 「下記の通り納品いたします」を明細の1行上に表示
-    html += '<div class="billing-intro" style="margin-top:4mm;margin-bottom:2mm;">下記の通り納品いたします。</div>';
+    // 縲御ｸ玖ｨ倥・騾壹ｊ邏榊刀縺・◆縺励∪縺吶阪ｒ譏守ｴｰ縺ｮ1陦御ｸ翫↓陦ｨ遉ｺ
+    html += '<div class="billing-intro" style="margin-top:4mm;margin-bottom:2mm;">荳玖ｨ倥・騾壹ｊ邏榊刀縺・◆縺励∪縺吶・/div>';
     
-    // 明細テーブル（税列なし、備考列あり）
-    html += generateSimpleItemsTableHTML(data.items || [], 10, false);
+    // 譏守ｴｰ繝・・繝悶Ν・育ｨ主・縺ｪ縺励∝ｙ閠・・縺ゅｊ・・    html += generateSimpleItemsTableHTML(data.items || [], 10, false);
     
-    // 合計行（税表示設定に合わせて表示）
-    if (showTax) {
+    // 蜷郁ｨ郁｡鯉ｼ育ｨ手｡ｨ遉ｺ險ｭ螳壹↓蜷医ｏ縺帙※陦ｨ遉ｺ・・    if (showTax) {
       html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
-        '<tr><td class="label">小計（税抜）</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
-        '<tr><td class="label">消費税</td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
-        '<tr><td class="label total-label" style="background:#9333ea;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
+        '<tr><td class="label">蟆剰ｨ茨ｼ育ｨ取栢・・/td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label">豸郁ｲｻ遞・/td><td class="value">&yen;' + formatNumber(totalTax) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#9333ea;">蜷郁ｨ茨ｼ育ｨ手ｾｼ・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
         '</table></div>';
     } else {
       html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
-        '<tr><td class="label total-label" style="background:#9333ea;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
+        '<tr><td class="label total-label" style="background:#9333ea;">蜷郁ｨ茨ｼ育ｨ取栢・・/td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
         '</table></div>';
     }
     
-    // 備考
-    if (data.notes) html += '<div class="notes-box"><div class="notes-title">備考</div><div class="notes-content">' + escapeHtml(data.notes) + '</div></div>';
+    // 蛯呵・    if (data.notes) html += '<div class="notes-box"><div class="notes-title">蛯呵・/div><div class="notes-content">' + escapeHtml(data.notes) + '</div></div>';
     
     html += '<div class="page-num">1 / 1</div></div></body></html>';
     return html;
@@ -889,7 +752,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   function openPreview(html, title) {
     var previewWindow = window.open('', '_blank', 'width=900,height=700,scrollbars=yes');
     if (!previewWindow) {
-      alert('ポップアップがブロックされました。');
+      alert('繝昴ャ繝励い繝・・縺後ヶ繝ｭ繝・け縺輔ｌ縺ｾ縺励◆縲・);
       return null;
     }
     previewWindow.document.write(html);
@@ -899,11 +762,11 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   }
   
   function generatePdfFileName(type, date, clientName, isIndividual) {
-    var honorific = isIndividual ? '様' : '御中';
-    var safeName = (clientName || '取引先').replace(/[\\/:*?"<>|]/g, '_');
-    if (type === 'invoice') return formatDateYYYYMM(date) + '請求書_' + safeName + honorific;
-    if (type === 'estimate') return formatDateYYYYMMDD(date) + '見積書_' + safeName + honorific;
-    if (type === 'delivery') return formatDateYYYYMMDD(date) + '納品書_' + safeName + honorific;
+    var honorific = isIndividual ? '讒・ : '蠕｡荳ｭ';
+    var safeName = (clientName || '蜿門ｼ募・').replace(/[\\/:*?"<>|]/g, '_');
+    if (type === 'invoice') return formatDateYYYYMM(date) + '隲区ｱよ嶌_' + safeName + honorific;
+    if (type === 'estimate') return formatDateYYYYMMDD(date) + '隕狗ｩ肴嶌_' + safeName + honorific;
+    if (type === 'delivery') return formatDateYYYYMMDD(date) + '邏榊刀譖ｸ_' + safeName + honorific;
     return 'document_' + safeName;
   }
 

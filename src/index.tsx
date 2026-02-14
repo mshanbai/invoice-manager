@@ -2622,8 +2622,11 @@ app.get('/clients', async (c) => {
             '<input type="text" name="mobile" value="' + (data ? (data.mobile || '') : '') + '" placeholder="090-1234-5678" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
             '<div><label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス</label>' +
             '<input type="email" name="email" value="' + (data ? (data.email || '') : '') + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
-            '<div class="md:col-span-2"><label class="block text-sm font-medium text-gray-700 mb-1">ウェブサイト</label>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">ウェブサイト</label>' +
             '<input type="url" name="website" value="' + (data ? (data.website || '') : '') + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" /></div>' +
+            '<div><label class="block text-sm font-medium text-gray-700 mb-1">帳票を受け取るメールアドレス</label>' +
+            '<input type="email" name="portal_email" value="' + (data ? (data.portal_email || '') : '') + '" class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500" />' +
+            '<p class="text-xs text-gray-500 mt-1">請求書など帳票の受け取り通知を送る宛先です（未入力の場合は既存のメールアドレスを使用）</p></div>' +
             '</div></div>' +
             
             // 取引条件（改善版）
@@ -8524,6 +8527,9 @@ app.get('/invoices', async (c) => {
                   <button type="button" id="pdfInvoiceBtn" class="hidden bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold">
                     <i class="fas fa-file-pdf mr-1"></i>PDF出力
                   </button>
+                  <button type="button" id="sendToClientBtn" class="hidden bg-teal-600 hover:bg-teal-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold">
+                    <i class="fas fa-paper-plane mr-1"></i>取引先へ送付
+                  </button>
                 </div>
               </div>
 
@@ -8557,6 +8563,12 @@ app.get('/invoices', async (c) => {
                       <option value="paid">入金済</option>
                       <option value="overdue">支払遅延</option>
                     </select>
+                    <p id="invoiceSentAtDisplay" class="text-xs text-teal-600 mt-1 font-medium">
+                      <i class="fas fa-paper-plane mr-1"></i>最終送付：<span id="invoiceSentAtText">—</span>
+                    </p>
+                    <p id="invoiceSentToEmailDisplay" class="hidden text-xs text-gray-500 mt-0.5">
+                      <span id="invoiceSentToEmailText"></span>
+                    </p>
                   </div>
                 </div>
 
@@ -8824,6 +8836,44 @@ app.get('/invoices', async (c) => {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 取引先へ送付 確認モーダル */}
+      <div id="sendToClientModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+          <div class="p-4 border-b bg-gradient-to-r from-teal-50 to-indigo-50">
+            <h3 class="font-bold text-gray-800 text-lg">取引先へ送付（確認）</h3>
+          </div>
+          <div class="p-4 space-y-3">
+            <div>
+              <span class="text-sm text-gray-600">請求書番号</span>
+              <p id="sendToClientInvoiceNo" class="font-medium text-gray-900"></p>
+            </div>
+            <div>
+              <span class="text-sm text-gray-600">得意先名</span>
+              <p id="sendToClientClientName" class="font-medium text-gray-900"></p>
+            </div>
+            <div>
+              <span class="text-sm text-gray-600">通知先メールアドレス</span>
+              <p id="sendToClientEmail" class="font-medium text-gray-900"></p>
+            </div>
+            <div class="space-y-2 pt-2">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="sendToClientAddPortal" class="rounded" checked />
+                <span class="text-sm">受取ページに追加（デフォルトON）</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="sendToClientNotifyEmail" class="rounded" checked />
+                <span class="text-sm">メールで通知（デフォルトON）</span>
+              </label>
+            </div>
+            <div id="sendToClientError" class="hidden text-sm text-red-600 font-medium mt-2"></div>
+          </div>
+          <div class="p-4 border-t bg-gray-50 flex justify-end gap-2">
+            <button type="button" id="closeSendToClientModal" class="px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-700">キャンセル</button>
+            <button type="button" id="executeSendToClientBtn" class="px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold">実行</button>
           </div>
         </div>
       </div>
@@ -10047,6 +10097,10 @@ app.get('/invoices', async (c) => {
           document.getElementById('deliveriesSection').classList.add('hidden');
           document.getElementById('deliveriesList').innerHTML = '<p class="text-sm text-gray-500">得意先を選択して「納品書を取得」をクリックしてください</p>';
           document.getElementById('selectedDeliveriesInfo').classList.add('hidden');
+          var sentAtTextEl = document.getElementById('invoiceSentAtText');
+          var sentToEmailEl = document.getElementById('invoiceSentToEmailDisplay');
+          if (sentAtTextEl) sentAtTextEl.textContent = '—';
+          if (sentToEmailEl) sentToEmailEl.classList.add('hidden');
           selectedBankAccountIds = [];
           clearBankAccountLimitNote();
           updateBankAccountCheckboxState();
@@ -10070,6 +10124,7 @@ app.get('/invoices', async (c) => {
           document.getElementById('deleteInvoiceBtn').classList.add('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.add('hidden');
           document.getElementById('pdfInvoiceBtn').classList.add('hidden');
+          document.getElementById('sendToClientBtn').classList.add('hidden');
           document.getElementById('newInvoiceBtnDetail').classList.add('hidden');
           
           renderItemsTable();
@@ -10098,6 +10153,23 @@ app.get('/invoices', async (c) => {
           document.querySelector('[name="invoice_no"]').value = data.invoice_no;
           document.querySelector('[name="invoice_date"]').value = data.invoice_date;
           document.querySelector('[name="status"]').value = data.status || 'draft';
+          var sentAtEl = document.getElementById('invoiceSentAtDisplay');
+          var sentAtTextEl = document.getElementById('invoiceSentAtText');
+          var sentToEmailEl = document.getElementById('invoiceSentToEmailDisplay');
+          var sentToEmailTextEl = document.getElementById('invoiceSentToEmailText');
+          if (sentAtTextEl) {
+            if (data.sent_at) {
+              var d = new Date(data.sent_at);
+              sentAtTextEl.textContent = d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+              if (sentToEmailEl && sentToEmailTextEl && data.sent_to_email) {
+                sentToEmailTextEl.textContent = data.sent_to_email;
+                sentToEmailEl.classList.remove('hidden');
+              } else if (sentToEmailEl) sentToEmailEl.classList.add('hidden');
+            } else {
+              sentAtTextEl.textContent = '—';
+              if (sentToEmailEl) sentToEmailEl.classList.add('hidden');
+            }
+          }
           document.querySelector('[name="client_id"]').value = data.client_id;
           document.querySelector('[name="payment_due_date"]').value = data.payment_due_date || '';
           document.querySelector('[name="billing_period_start"]').value = data.billing_period_start || '';
@@ -10122,6 +10194,7 @@ app.get('/invoices', async (c) => {
           document.getElementById('deleteInvoiceBtn').classList.remove('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.remove('hidden');
           document.getElementById('pdfInvoiceBtn').classList.remove('hidden');
+          document.getElementById('sendToClientBtn').classList.remove('hidden');
           document.getElementById('newInvoiceBtnDetail').classList.remove('hidden');
           
           // 得意先の選択表示を更新
@@ -10237,6 +10310,7 @@ app.get('/invoices', async (c) => {
             document.getElementById('deleteInvoiceBtn').classList.remove('hidden');
             document.getElementById('duplicateInvoiceBtn').classList.remove('hidden');
             document.getElementById('pdfInvoiceBtn').classList.remove('hidden');
+            document.getElementById('sendToClientBtn').classList.remove('hidden');
             document.getElementById('newInvoiceBtnDetail').classList.remove('hidden');
           } catch (e) {
             window.SmartBill.showErrorDialog('請求書の保存に失敗しました');
@@ -10423,9 +10497,32 @@ app.get('/invoices', async (c) => {
           document.getElementById('deleteInvoiceBtn').classList.add('hidden');
           document.getElementById('duplicateInvoiceBtn').classList.add('hidden');
           document.getElementById('pdfInvoiceBtn').classList.add('hidden');
+          document.getElementById('sendToClientBtn').classList.add('hidden');
           document.getElementById('newInvoiceBtnDetail').classList.add('hidden');
           
           formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+        }
+        
+        // =====================================
+        // 取引先へ送付 確認モーダル
+        // =====================================
+        function openSendToClientModal() {
+          var form = document.getElementById('invoiceForm');
+          var clientId = form.querySelector('[name="client_id"]').value;
+          var client = clients.find(function(c) { return c.id == clientId; });
+          var portalEmail = (client && client.portal_email && String(client.portal_email).trim()) ? String(client.portal_email).trim() : '';
+          var email = (client && client.email && String(client.email).trim()) ? String(client.email).trim() : '';
+          var resolvedToEmail = portalEmail || email || null;
+          document.getElementById('sendToClientInvoiceNo').textContent = document.querySelector('[name="invoice_no"]').value || (currentInvoiceId ? 'INV-' + String(currentInvoiceId).padStart(6, '0') : '-');
+          document.getElementById('sendToClientClientName').textContent = (client && client.client_name) ? client.client_name : '-';
+          document.getElementById('sendToClientEmail').textContent = resolvedToEmail || '通知先メールが未設定です';
+          document.getElementById('sendToClientAddPortal').checked = true;
+          document.getElementById('sendToClientNotifyEmail').checked = true;
+          document.getElementById('sendToClientError').classList.add('hidden');
+          document.getElementById('sendToClientModal').classList.remove('hidden');
+        }
+        function closeSendToClientModal() {
+          document.getElementById('sendToClientModal').classList.add('hidden');
         }
         
         // =====================================
@@ -10768,6 +10865,75 @@ app.get('/invoices', async (c) => {
           document.getElementById('deleteInvoiceBtn').addEventListener('click', deleteInvoice);
           document.getElementById('duplicateInvoiceBtn').addEventListener('click', duplicateInvoice);
           document.getElementById('pdfInvoiceBtn').addEventListener('click', exportInvoicePDF);
+          document.getElementById('sendToClientBtn').addEventListener('click', openSendToClientModal);
+          document.getElementById('closeSendToClientModal').addEventListener('click', closeSendToClientModal);
+          document.getElementById('executeSendToClientBtn').addEventListener('click', async function() {
+            if (!currentInvoiceId) return;
+            var addToPortal = document.getElementById('sendToClientAddPortal').checked;
+            var notifyEmail = document.getElementById('sendToClientNotifyEmail').checked;
+            if (!addToPortal && !notifyEmail) {
+              document.getElementById('sendToClientError').textContent = '受取ページに追加またはメール通知のいずれかを選択してください。';
+              document.getElementById('sendToClientError').classList.remove('hidden');
+              return;
+            }
+            var btn = document.getElementById('executeSendToClientBtn');
+            var errEl = document.getElementById('sendToClientError');
+            errEl.classList.add('hidden');
+            btn.disabled = true;
+            btn.textContent = '送付中…';
+            try {
+              var res = await axios.post('/api/invoices/' + currentInvoiceId + '/send', {
+                add_to_portal: addToPortal,
+                notify_email: notifyEmail,
+                override_email: null
+              });
+              var data = res.data;
+              if (data && data.success) {
+                closeSendToClientModal();
+                var invData = data.invoice || {};
+                if (invData.status === 'sent') {
+                  originalInvoiceStatus = 'sent';
+                  document.querySelector('[name="status"]').value = 'sent';
+                  var inv = invoices.find(function(i) { return i.id === currentInvoiceId; });
+                  if (inv) inv.status = 'sent';
+                  if (invData.sent_at) {
+                    var textEl = document.getElementById('invoiceSentAtText');
+                    if (textEl) {
+                      var d = new Date(invData.sent_at);
+                      textEl.textContent = d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+                    }
+                    var emailEl = document.getElementById('invoiceSentToEmailDisplay');
+                    var emailTextEl = document.getElementById('invoiceSentToEmailText');
+                    if (emailEl && emailTextEl && invData.sent_to_email) {
+                      emailTextEl.textContent = invData.sent_to_email;
+                      emailEl.classList.remove('hidden');
+                    }
+                  }
+                }
+                renderInvoiceTable();
+                renderSidebarInvoices();
+                var msg = '送付しました。';
+                if (data.warnings && data.warnings.includes('EMAIL_FAILED')) {
+                  msg += ' メール送信のみ失敗（再通知できます）';
+                }
+                window.SmartBill.showSuccessDialog(msg);
+              } else {
+                errEl.textContent = (data && data.message) ? data.message : '送付に失敗しました。';
+                errEl.classList.remove('hidden');
+              }
+            } catch (e) {
+              var errMsg = (e.response && e.response.data && e.response.data.message) ? e.response.data.message : (e.response && e.response.data && e.response.data.error) ? e.response.data.error : '送付に失敗しました。';
+              errEl.textContent = errMsg;
+              errEl.classList.remove('hidden');
+              console.error(e);
+            } finally {
+              btn.disabled = false;
+              btn.textContent = '実行';
+            }
+          });
+          document.getElementById('sendToClientModal').addEventListener('click', function(e) {
+            if (e.target === this) closeSendToClientModal();
+          });
           document.querySelector('[name="invoice_no"]').addEventListener('input', function() {
             updateFormHeaderTitle();
           });
@@ -10876,9 +11042,12 @@ app.get('/invoices', async (c) => {
                 closeProductModal();
                 return;
               }
+              var sendToClientModal = document.getElementById('sendToClientModal');
               var deliveryDetailModal = document.getElementById('deliveryDetailModal');
               var batchModal = document.getElementById('batchCreateModal');
-              if (!deliveryDetailModal.classList.contains('hidden')) {
+              if (!sendToClientModal.classList.contains('hidden')) {
+                closeSendToClientModal();
+              } else if (!deliveryDetailModal.classList.contains('hidden')) {
                 closeDeliveryDetailModal();
               } else if (!batchModal.classList.contains('hidden')) {
                 closeBatchCreateModal();

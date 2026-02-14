@@ -291,119 +291,6 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   }
   
   /**
-   * 請求書「振込先」ブロック（縦積み固定・既存CSSのみ使用・インラインスタイルでnowrap/フォント調整）
-   * <!-- BANK_BLOCK_V3 -->
-   */
-  function buildInvoiceBankBlockHtml(bankInfo, bankInfoList) {
-    var accounts = Array.isArray(bankInfoList) ? bankInfoList.slice(0, 3) : [];
-    if (accounts.length === 0 && bankInfo.bank_name) {
-      accounts = [bankInfo];
-    }
-    if (accounts.length === 0) return '';
-
-    function normalizeHolder(s) {
-      return String(s || '').trim().replace(/[\s　]+/g, '');
-    }
-    function getBranch(b) { return b.branch_name || b.bank_branch || ''; }
-    function getTypeLabel(b) { return b.account_type_label || (b.account_type === 'current' ? '当座' : '普通'); }
-    function visualLen(s) {
-      var str = String(s || '');
-      var n = 0;
-      for (var i = 0; i < str.length; i++) {
-        n += str.charCodeAt(i) < 128 ? 1 : 2;
-      }
-      return n;
-    }
-
-    var gap = '　';
-    var maxLen = 0;
-    accounts.forEach(function(b) {
-      var bank = b.bank_name || '';
-      var branch = getBranch(b);
-      var type = getTypeLabel(b);
-      var num = b.account_number || '';
-      var holder = b.account_holder || '';
-      maxLen = Math.max(maxLen, visualLen(bank + gap + branch));
-      maxLen = Math.max(maxLen, visualLen(type + gap + num));
-      maxLen = Math.max(maxLen, visualLen(holder));
-      if (accounts.length > 1) {
-        var oneLineLen = visualLen(bank + (branch ? gap + branch : '') + gap + type + gap + num);
-        maxLen = Math.max(maxLen, oneLineLen);
-      }
-    });
-
-    var fontSize = 10;
-    var letterSpacing = '';
-    if (maxLen <= 24) fontSize = 10;
-    else if (maxLen <= 28) fontSize = 9;
-    else if (maxLen <= 32) fontSize = 8;
-    else if (maxLen <= 36) fontSize = 7.5;
-    else {
-      fontSize = 7;
-      letterSpacing = '; letter-spacing: -0.2px';
-    }
-    var rowStyle = 'white-space:nowrap;font-size:' + fontSize + 'pt;text-align:left' + letterSpacing;
-
-    var groups = [];
-    var currentGroup = [];
-    for (var i = 0; i < accounts.length; i++) {
-      var n = normalizeHolder(accounts[i].account_holder);
-      if (currentGroup.length === 0 || normalizeHolder(currentGroup[currentGroup.length - 1].account_holder) === n) {
-        currentGroup.push(accounts[i]);
-      } else {
-        groups.push(currentGroup);
-        currentGroup = [accounts[i]];
-      }
-    }
-    if (currentGroup.length > 0) groups.push(currentGroup);
-
-    var html = '<!-- BANK_BLOCK_V3 --><div class="bank-box"><div class="bank-header" style="writing-mode:vertical-rl;text-orientation:upright;width:10mm;min-width:10mm;flex-shrink:0;display:flex;align-items:center;justify-content:center;">振込先</div>';
-    var bodyStyle = 'line-height:1.25';
-    html += '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">';
-
-    if (accounts.length === 1) {
-      var b = accounts[0];
-      var bankName = escapeHtml(b.bank_name || '');
-      var branchName = escapeHtml(getBranch(b));
-      var typeNum = escapeHtml(getTypeLabel(b)) + gap + escapeHtml(b.account_number || '');
-      var holderVal = escapeHtml(b.account_holder || '');
-      html += '<div class="bank-body" style="' + bodyStyle + '">';
-      html += '<div style="' + rowStyle + '">' + bankName + (branchName ? gap + branchName : '') + '</div>';
-      html += '<div style="' + rowStyle + '">' + typeNum + '</div>';
-      html += '<div style="' + rowStyle + '">口座名義：' + holderVal + '</div>';
-      html += '</div>';
-    } else {
-      var sep = '<div style="border-top:0.75px solid #D0D6DE;margin:1mm 2mm 0;"></div>';
-      for (var g = 0; g < groups.length; g++) {
-        var group = groups[g];
-        for (var i = 0; i < group.length; i++) {
-          if (g > 0 || i > 0) html += sep;
-          var b = group[i];
-          var bankName = escapeHtml(b.bank_name || '');
-          var branchName = escapeHtml(getBranch(b));
-          var typeNum = escapeHtml(getTypeLabel(b)) + gap + escapeHtml(b.account_number || '');
-          var oneLine = bankName + (branchName ? gap + branchName : '') + gap + typeNum;
-          html += '<div class="bank-body" style="' + bodyStyle + '">';
-          html += '<div style="' + rowStyle + '">' + oneLine + '</div>';
-          if (groups.length > 1) {
-            html += '<div style="' + rowStyle + '">' + escapeHtml(b.account_holder || '') + '</div>';
-          }
-          html += '</div>';
-        }
-        if (groups.length === 1 && group[0].account_holder) {
-          html += '<div class="bank-body" style="' + bodyStyle + '">';
-          html += '<div style="' + rowStyle + '">' + escapeHtml(group[0].account_holder) + '</div>';
-          html += '</div>';
-        }
-      }
-    }
-
-    html += '</div></div>';
-    html += '<div class="bank-note">※振込手数料は御社のご負担にてお願い申し上げます。</div>';
-    return html;
-  }
-
-  /**
    * 請求書HTML生成
    * レイアウト:
    * [タイトル行] 左50%:請求先情報 | 右50%:「請求書」タイトル背景色
@@ -432,7 +319,26 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
     var honorific = clientInfo.is_individual ? '様' : '御中';
     
-    var bankHtml = buildInvoiceBankBlockHtml(bankInfo, data.bankInfoList);
+    var bankHtml = '';
+    if (bankInfoList.length === 0 && bankInfo.bank_name) {
+      bankInfoList = [bankInfo];
+    }
+    if (bankInfoList.length > 0) {
+      bankHtml = '<div class="bank-box"><div class="bank-header">振込先</div>';
+      bankInfoList.forEach(function(b, idx) {
+        bankHtml += '<div class="bank-body">';
+        bankHtml += escapeHtml(b.bank_name || '') + ' ' + escapeHtml(b.bank_branch || '') + '<br>';
+        var typeLabel = b.account_type_label || (b.account_type === 'current' ? '当座' : '普通');
+        bankHtml += escapeHtml(typeLabel) + ' ' + escapeHtml(b.account_number || '') + '<br>';
+        bankHtml += '口座名義: ' + escapeHtml(b.account_holder || '');
+        bankHtml += '</div>';
+        if (idx < bankInfoList.length - 1) {
+          bankHtml += '<div style="height:6px;"></div>';
+        }
+      });
+      bankHtml += '</div>';
+      bankHtml += '<div class="bank-note">※振込手数料は御社のご負担にてお願い申し上げます。</div>';
+    }
     
     var itemsResult = generateInvoiceItemsTableHTML(data.items || [], 6);
     var taxBreakdown = calculateTaxBreakdown(data.items || []);

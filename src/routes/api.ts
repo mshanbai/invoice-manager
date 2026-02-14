@@ -8,6 +8,7 @@ import type {
   FabricSpec,
 } from '../features/fabric-calculator/types'
 import { accountTypeCodeToLabel, normalizeAccountTypeToCode } from '../utils/bankAccount'
+import { sendInvoiceNotification } from '../utils/email'
 
 const api = new Hono()
 const isDev = process.env.NODE_ENV !== 'production'
@@ -1544,6 +1545,7 @@ api.post('/clients', async (c) => {
       fax: data.fax || '',
       mobile: data.mobile || '',
       website: data.website || '',
+      portal_email: data.portal_email || null,
       bank_name: data.bank_name || '',
       bank_branch: data.bank_branch || '',
       bank_account_type: data.bank_account_type || '',
@@ -1585,6 +1587,7 @@ api.put('/clients/:id', async (c) => {
       fax: data.fax || '',
       mobile: data.mobile || '',
       website: data.website || '',
+      portal_email: data.portal_email || null,
       bank_name: data.bank_name || '',
       bank_branch: data.bank_branch || '',
       bank_account_type: data.bank_account_type || '',
@@ -3584,6 +3587,176 @@ api.patch('/invoices/:id/status', async (c) => {
   
   if (error) return handleSupabaseError(c, error, 'invoices update status')
   return c.json({ success: true })
+})
+
+// 取引先へ送付（受取ページ追加 + メール通知）
+// POST /api/invoices/:invoiceId/send
+api.post('/invoices/:id/send', async (c) => {
+  const id = c.req.param('id')
+  const idNum = Number(id)
+  if (!Number.isFinite(idNum) || idNum <= 0) {
+    return c.json({ success: false, error: 'INVALID_INVOICE_ID', message: '請求書IDが無効です' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const addToPortal = body.add_to_portal !== false
+  const notifyEmail = body.notify_email !== false
+  const overrideEmail = body.override_email && String(body.override_email).trim() ? String(body.override_email).trim() : null
+
+  if (!addToPortal && !notifyEmail) {
+    return c.json({ success: false, error: 'NO_ACTION', message: '受取ページに追加またはメール通知のいずれかを選択してください' }, 400)
+  }
+
+  console.log(`[API] POST /api/invoices/${id}/send invoiceId=${idNum} add_to_portal=${addToPortal} notify_email=${notifyEmail}`)
+
+  // 請求書取得
+  const { data: invoice, error: invoiceError } = await supabase
+    .from('invoices')
+    .select('id, client_id, status, user_id, invoice_no')
+    .eq('id', idNum)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices select for send')
+  if (!invoice) return c.json({ success: false, error: 'INVOICE_NOT_FOUND', message: '請求書が見つかりません' }, 404)
+
+  // 得意先未設定チェック（portal追加前に）
+  if (addToPortal && (invoice.client_id == null || invoice.client_id === '')) {
+    return c.json({ success: false, error: 'CLIENT_REQUIRED', message: '得意先未設定' }, 400)
+  }
+
+  // 送付先メール決定: override_email > portal_email > email
+  const { data: client, error: clientError } = await supabase
+    .from('clients')
+    .select('portal_email, email, client_name')
+    .eq('id', invoice.client_id)
+    .eq('user_id', DEMO_USER_ID)
+    .maybeSingle()
+
+  if (clientError) return handleSupabaseError(c, clientError, 'clients select for send')
+  const portalEmail = client?.portal_email && String(client.portal_email).trim() ? String(client.portal_email).trim() : ''
+  const email = client?.email && String(client.email).trim() ? String(client.email).trim() : ''
+  const resolvedToEmail = overrideEmail || portalEmail || email || ''
+
+  if (!resolvedToEmail) {
+    console.log(`[API] send invoiceId=${idNum} resolved_email=EMPTY (no recipient)`)
+    return c.json({ success: false, error: 'NO_RECIPIENT', message: '送付先メールが未設定です' }, 400)
+  }
+
+  console.log(`[API] send invoiceId=${idNum} resolved_email=${resolvedToEmail}`)
+
+  const warnings: string[] = []
+  let portalAdded = false
+  let emailSent = false
+  let emailError: string | undefined
+
+  // (1) portal_invoices upsert（実テーブル列: id, company_id, invoice_id, client_id, created_at）
+  if (addToPortal) {
+    const portalPayload: Record<string, unknown> = {
+      invoice_id: idNum,
+      client_id: invoice.client_id,
+    }
+    if ((invoice as any).company_id != null && (invoice as any).company_id !== '') {
+      portalPayload.company_id = (invoice as any).company_id
+    }
+    const { error: portalError } = await supabase
+      .from('portal_invoices')
+      .upsert(portalPayload, { onConflict: 'invoice_id' })
+
+    if (portalError) {
+      const errInfo = {
+        code: (portalError as any).code,
+        message: (portalError as any).message,
+        details: (portalError as any).details,
+        hint: (portalError as any).hint,
+      }
+      console.error(`[API] send invoiceId=${idNum} portal_upsert failed`, JSON.stringify(errInfo, null, 2))
+      const res: Record<string, unknown> = {
+        success: false,
+        error: 'PORTAL_UPSERT_FAILED',
+        message: '受取ページへの追加に失敗しました',
+      }
+      if (isDev) res.debug = errInfo
+      return c.json(res, 500)
+    }
+    portalAdded = true
+    console.log(`[API] send invoiceId=${idNum} portal_upsert ok`)
+  }
+
+  // (2) invoices 更新
+  let invoiceResponse: any = { id: invoice.id, status: invoice.status, sent_at: null, sent_to_email: null }
+  if (addToPortal) {
+    const now = new Date().toISOString()
+    const { data: updatedInvoice, error: updateError } = await supabase
+      .from('invoices')
+      .update({
+        status: 'sent',
+        sent_at: now,
+        sent_to_email: resolvedToEmail,
+        updated_at: now
+      })
+      .eq('id', idNum)
+      .eq('user_id', DEMO_USER_ID)
+      .select('id, status, sent_at, sent_to_email')
+      .maybeSingle()
+
+    if (updateError) {
+      const errInfo = {
+        code: (updateError as any).code,
+        message: (updateError as any).message,
+        details: (updateError as any).details,
+        hint: (updateError as any).hint,
+      }
+      console.error(`[API] send invoiceId=${idNum} invoices update failed`, JSON.stringify(errInfo, null, 2))
+      const res: Record<string, unknown> = {
+        success: false,
+        error: 'INVOICES_UPDATE_FAILED',
+        message: '請求書の更新に失敗しました',
+      }
+      if (isDev) res.debug = errInfo
+      return c.json(res, 500)
+    }
+    invoiceResponse = updatedInvoice
+    console.log(`[API] send invoiceId=${idNum} invoices update ok`)
+  }
+
+  // (3) メール送信
+  if (notifyEmail) {
+    const { data: companyInfo } = await supabase
+      .from('company_info')
+      .select('company_name')
+      .eq('user_id', DEMO_USER_ID)
+      .maybeSingle()
+
+    const emailResult = await sendInvoiceNotification({
+      to: resolvedToEmail,
+      companyName: companyInfo?.company_name || '御社',
+      clientName: client?.client_name || '',
+      invoiceNo: invoice.invoice_no || `INV-${idNum}`
+    })
+
+    emailSent = emailResult.sent
+    emailError = emailResult.error
+    if (!emailSent) {
+      warnings.push('EMAIL_FAILED')
+      console.log(`[API] send invoiceId=${idNum} email sent=false error=${emailError}`)
+    } else {
+      console.log(`[API] send invoiceId=${idNum} email sent ok`)
+    }
+  }
+
+  return c.json({
+    success: true,
+    invoice: {
+      id: invoiceResponse?.id,
+      status: invoiceResponse?.status || 'sent',
+      sent_at: invoiceResponse?.sent_at || null,
+      sent_to_email: invoiceResponse?.sent_to_email || null
+    },
+    portal: { added: portalAdded },
+    email: { sent: emailSent, ...(emailError && { error: emailError }) },
+    ...(warnings.length > 0 && { warnings })
+  }, 200)
 })
 
 // 請求書削除

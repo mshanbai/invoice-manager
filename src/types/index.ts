@@ -59,6 +59,7 @@ export interface Client {
   client_code: string;
   person_name: string;
   email: string;
+  portal_email?: string | null;
   closing_day: string;
   payment_day: string;
   use_wholesale_price: number;
@@ -140,6 +141,8 @@ export interface Invoice {
   total_amount: number;
   notes: string;
   status: string;
+  sent_at?: string | null;
+  sent_to_email?: string | null;
 }
 
 export interface InvoiceItem {
