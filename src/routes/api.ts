@@ -1,3 +1,9 @@
+import * as dotenv from 'dotenv'
+import * as path from 'path'
+
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local') })
+dotenv.config({ path: path.resolve(process.cwd(), '.env') })
+
 import { Hono } from 'hono'
 import { supabase } from '../lib/supabaseClient'
 import { demoFabricDict } from '../features/fabric-calculator/data/demoFabricDict'
@@ -140,6 +146,62 @@ api.onError((err, c) => {
 
 // SaaS用: 開発中は仮のユーザーIDを使用
 const DEMO_USER_ID = 'demo-user-001'
+
+function getResolvedUserId(_c?: any): string {
+  // TODO: Supabase Auth 導入後はここだけ差し替える
+  return DEMO_USER_ID
+}
+
+function getPortalDateRange(c: any): { from: string | null; to: string | null; error: string | null } {
+  const from = (c.req.query('from') || '').trim()
+  const to = (c.req.query('to') || '').trim()
+  if (from && !isValidDateString(from)) {
+    return { from: null, to: null, error: 'INVALID_FROM_DATE' }
+  }
+  if (to && !isValidDateString(to)) {
+    return { from: null, to: null, error: 'INVALID_TO_DATE' }
+  }
+  return { from: from || null, to: to || null, error: null }
+}
+
+function buildSimplePdfBuffer(lines: string[]): ArrayBuffer {
+  const safeLines = lines.map((line) =>
+    String(line || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/\(/g, '\\(')
+      .replace(/\)/g, '\\)')
+  )
+  const textCommands = safeLines
+    .map((line, idx) => `BT /F1 12 Tf 50 ${780 - idx * 18} Td (${line}) Tj ET`)
+    .join('\n')
+
+  const objects = [
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+    '2 0 obj << /Type /Pages /Count 1 /Kids [3 0 R] >> endobj',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj',
+    '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+    `5 0 obj << /Length ${textCommands.length} >> stream\n${textCommands}\nendstream endobj`,
+  ]
+
+  let pdf = '%PDF-1.4\n'
+  const offsets: number[] = [0]
+  for (const obj of objects) {
+    offsets.push(pdf.length)
+    pdf += `${obj}\n`
+  }
+  const xrefStart = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n`
+  pdf += '0000000000 65535 f \n'
+  for (let i = 1; i <= objects.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  }
+  pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
+  const encoded = new TextEncoder().encode(pdf)
+  return encoded.buffer.slice(
+    encoded.byteOffset,
+    encoded.byteOffset + encoded.byteLength
+  ) as ArrayBuffer
+}
 
 // 税率を取得するヘルパー関数（0%に対応）
 function getTaxRate(taxRate: number | null | undefined): number {
@@ -3594,6 +3656,7 @@ api.patch('/invoices/:id/status', async (c) => {
 api.post('/invoices/:id/send', async (c) => {
   const id = c.req.param('id')
   const idNum = Number(id)
+  const userId = getResolvedUserId(c)
   if (!Number.isFinite(idNum) || idNum <= 0) {
     return c.json({ success: false, error: 'INVALID_INVOICE_ID', message: '請求書IDが無効です' }, 400)
   }
@@ -3612,9 +3675,9 @@ api.post('/invoices/:id/send', async (c) => {
   // 請求書取得
   const { data: invoice, error: invoiceError } = await supabase
     .from('invoices')
-    .select('id, client_id, status, user_id, invoice_no')
+    .select('id, client_id, status, user_id, invoice_no, billing_period_start, billing_period_end, email_notify_attempts')
     .eq('id', idNum)
-    .eq('user_id', DEMO_USER_ID)
+    .eq('user_id', userId)
     .maybeSingle()
 
   if (invoiceError) return handleSupabaseError(c, invoiceError, 'invoices select for send')
@@ -3630,7 +3693,7 @@ api.post('/invoices/:id/send', async (c) => {
     .from('clients')
     .select('portal_email, email, client_name')
     .eq('id', invoice.client_id)
-    .eq('user_id', DEMO_USER_ID)
+    .eq('user_id', userId)
     .maybeSingle()
 
   if (clientError) return handleSupabaseError(c, clientError, 'clients select for send')
@@ -3645,47 +3708,193 @@ api.post('/invoices/:id/send', async (c) => {
 
   console.log(`[API] send invoiceId=${idNum} resolved_email=${resolvedToEmail}`)
 
+  let portalOk = false
+  let portalInvoiceId: string | null = null
+  let portalErrorMessage: string | null = null
+  let emailOk = false
+  let emailErrorMessage: string | null = null
+  let invoiceResponse: any = { id: invoice.id, status: invoice.status, sent_at: null, sent_to_email: null }
   const warnings: string[] = []
-  let portalAdded = false
-  let emailSent = false
-  let emailError: string | undefined
 
-  // (1) portal_invoices upsert（実テーブル列: id, company_id, invoice_id, client_id, created_at）
+  // (1) portal先行：失敗したら送付済にしない
   if (addToPortal) {
-    const portalPayload: Record<string, unknown> = {
-      invoice_id: idNum,
-      client_id: invoice.client_id,
-    }
-    if ((invoice as any).company_id != null && (invoice as any).company_id !== '') {
-      portalPayload.company_id = (invoice as any).company_id
-    }
-    const { error: portalError } = await supabase
-      .from('portal_invoices')
-      .upsert(portalPayload, { onConflict: 'invoice_id' })
+    let companyInfoId: number | null = null
+    let companyInfoSelectError: unknown = null
 
-    if (portalError) {
-      const errInfo = {
-        code: (portalError as any).code,
-        message: (portalError as any).message,
-        details: (portalError as any).details,
-        hint: (portalError as any).hint,
+    const companyInfoWithUser = await supabase
+      .from('company_info')
+      .select('id')
+      .eq('user_id', userId)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (companyInfoWithUser.error) {
+      companyInfoSelectError = companyInfoWithUser.error
+      console.warn(
+        `[API] company_info user-scoped select failed. fallback to first row. invoiceId=${idNum} user_id=${userId}`,
+        companyInfoWithUser.error
+      )
+    } else if (companyInfoWithUser.data?.id != null) {
+      companyInfoId = Number(companyInfoWithUser.data.id)
+    }
+
+    if (companyInfoId == null) {
+      const companyInfoFallback = await supabase
+        .from('company_info')
+        .select('id')
+        .order('id', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+
+      if (companyInfoFallback.error) {
+        const errInfo = {
+          code: (companyInfoFallback.error as any)?.code,
+          message: (companyInfoFallback.error as any)?.message || 'COMPANY_INFO_SELECT_FAILED',
+          details: (companyInfoFallback.error as any)?.details,
+          hint: (companyInfoFallback.error as any)?.hint,
+        }
+        portalErrorMessage = errInfo.message || 'COMPANY_INFO_SELECT_FAILED'
+        console.error(
+          '[API] portal_company upsert failed company_info lookup error',
+          JSON.stringify(errInfo, null, 2)
+        )
+        const res: Record<string, unknown> = {
+          success: false,
+          error: 'PORTAL_COMPANY_UPSERT_FAILED',
+          message: '受取ページ用会社情報の解決に失敗しました',
+          portal: { ok: false, error: portalErrorMessage, portal_invoice_id: null },
+          email: { ok: false },
+        }
+        if (isDev) res.debug = { company_info_error: errInfo }
+        return c.json(res, 500)
       }
-      console.error(`[API] send invoiceId=${idNum} portal_upsert failed`, JSON.stringify(errInfo, null, 2))
+
+      if (companyInfoFallback.data?.id == null) {
+        portalErrorMessage = 'COMPANY_INFO_NOT_FOUND'
+        console.error(
+          `[API] portal_company upsert failed company_info not found invoiceId=${idNum} user_id=${userId}`
+        )
+        const res: Record<string, unknown> = {
+          success: false,
+          error: 'PORTAL_COMPANY_UPSERT_FAILED',
+          message: '受取ページ用会社情報が見つかりません',
+          portal: { ok: false, error: portalErrorMessage, portal_invoice_id: null },
+          email: { ok: false },
+        }
+        if (isDev) {
+          res.debug = {
+            company_info_error: companyInfoSelectError,
+            fallback: 'single-tenant first row',
+          }
+        }
+        return c.json(res, 500)
+      }
+
+      companyInfoId = Number(companyInfoFallback.data.id)
+      console.warn(
+        `[API] company_info fallback applied (single-tenant first row). invoiceId=${idNum} user_id=${userId} company_info_id=${companyInfoId}`
+      )
+    }
+
+    const { data: portalCompanyRow, error: portalCompanyError } = await supabase
+      .from('portal_companies')
+      .upsert(
+        { user_id: userId, company_info_id: companyInfoId },
+        { onConflict: 'user_id,company_info_id' }
+      )
+      .select('id')
+      .single()
+
+    if (portalCompanyError || !portalCompanyRow?.id) {
+      const errInfo = {
+        code: (portalCompanyError as any)?.code,
+        message: (portalCompanyError as any)?.message || 'PORTAL_COMPANY_UPSERT_FAILED',
+        details: (portalCompanyError as any)?.details,
+        hint: (portalCompanyError as any)?.hint,
+      }
+      portalErrorMessage = errInfo.message || 'PORTAL_COMPANY_UPSERT_FAILED'
+      console.log('[API] portal ok=false portal_invoice_id=null')
+      console.error('[API] portal_company upsert failed', JSON.stringify(errInfo, null, 2))
       const res: Record<string, unknown> = {
         success: false,
-        error: 'PORTAL_UPSERT_FAILED',
-        message: '受取ページへの追加に失敗しました',
+        error: 'PORTAL_COMPANY_UPSERT_FAILED',
+        message: '受取ページ用会社情報の登録に失敗しました',
+        portal: { ok: false, error: portalErrorMessage, portal_invoice_id: null },
+        email: { ok: false },
       }
       if (isDev) res.debug = errInfo
       return c.json(res, 500)
     }
-    portalAdded = true
-    console.log(`[API] send invoiceId=${idNum} portal_upsert ok`)
+
+    const portalCompanyId = String(portalCompanyRow.id)
+    const portalPayload: Record<string, unknown> = {
+      invoice_id: idNum,
+      client_id: invoice.client_id,
+      company_id: portalCompanyId,
+      user_id: userId,
+      updated_at: new Date().toISOString(),
+    }
+    const { data: portalRow, error: portalError } = await supabase
+      .from('portal_invoices')
+      .upsert(portalPayload, { onConflict: 'invoice_id' })
+      .select('id')
+      .maybeSingle()
+
+    if (portalError || !portalRow?.id) {
+      const errInfo = {
+        code: (portalError as any)?.code,
+        message: (portalError as any)?.message || 'PORTAL_UPSERT_FAILED',
+        details: (portalError as any)?.details,
+        hint: (portalError as any)?.hint,
+      }
+      portalErrorMessage = errInfo.message || 'PORTAL_UPSERT_FAILED'
+      console.log(`[API] portal ok=false portal_invoice_id=null`)
+      console.error('[API] portal_invoice upsert failed', JSON.stringify(errInfo, null, 2))
+      const res: Record<string, unknown> = {
+        success: false,
+        error: 'PORTAL_UPSERT_FAILED',
+        message: '受取ページへの追加に失敗しました',
+        portal: { ok: false, error: portalErrorMessage, portal_invoice_id: null },
+        email: { ok: false },
+      }
+      if (isDev) res.debug = errInfo
+      return c.json(res, 500)
+    }
+    portalOk = true
+    portalInvoiceId = String(portalRow.id)
+    console.log(`[API] portal ok=true portal_invoice_id=${portalInvoiceId}`)
+    try {
+      await supabase
+        .from('portal_invoice_events')
+        .insert({
+          portal_invoice_id: portalInvoiceId,
+          actor_user_id: userId,
+          type: 'sent',
+          payload: { invoice_id: idNum },
+        })
+    } catch (eventErr) {
+      console.warn('[API] portal sent event insert failed', eventErr)
+      warnings.push('PORTAL_SENT_EVENT_SAVE_FAILED')
+    }
+  } else {
+    // 既存仕様互換: ポータル追加をオフにした場合は送付済確定しない
+    console.log('[API] portal ok=false portal_invoice_id=null')
+    return c.json({
+      success: true,
+      invoice: {
+        id: invoice.id,
+        status: invoice.status,
+        sent_at: null,
+        sent_to_email: null,
+      },
+      portal: { ok: false, portal_invoice_id: null, skipped: true },
+      email: { ok: false, skipped: true }
+    }, 200)
   }
 
-  // (2) invoices 更新
-  let invoiceResponse: any = { id: invoice.id, status: invoice.status, sent_at: null, sent_to_email: null }
-  if (addToPortal) {
+  // (2) portal成功後に送付済を確定
+  if (portalOk) {
     const now = new Date().toISOString()
     const { data: updatedInvoice, error: updateError } = await supabase
       .from('invoices')
@@ -3696,7 +3905,7 @@ api.post('/invoices/:id/send', async (c) => {
         updated_at: now
       })
       .eq('id', idNum)
-      .eq('user_id', DEMO_USER_ID)
+      .eq('user_id', userId)
       .select('id, status, sent_at, sent_to_email')
       .maybeSingle()
 
@@ -3716,34 +3925,127 @@ api.post('/invoices/:id/send', async (c) => {
       if (isDev) res.debug = errInfo
       return c.json(res, 500)
     }
-    invoiceResponse = updatedInvoice
-    console.log(`[API] send invoiceId=${idNum} invoices update ok`)
+    invoiceResponse = updatedInvoice || invoiceResponse
   }
 
-  // (3) メール送信
-  if (notifyEmail) {
-    const { data: companyInfo } = await supabase
-      .from('company_info')
-      .select('company_name')
-      .eq('user_id', DEMO_USER_ID)
-      .maybeSingle()
+  // (3) portal成功時のみ納品書スナップショットを保存
+  if (portalOk && portalInvoiceId) {
+    try {
+      let deliveries: any[] = []
 
-    const emailResult = await sendInvoiceNotification({
-      to: resolvedToEmail,
-      companyName: companyInfo?.company_name || '御社',
-      clientName: client?.client_name || '',
-      invoiceNo: invoice.invoice_no || `INV-${idNum}`
-    })
+      const { data: linkedDeliveries, error: linkedError } = await supabase
+        .from('deliveries')
+        .select('*')
+        .eq('invoice_id', idNum)
+        .eq('user_id', userId)
+        .order('delivery_date', { ascending: true })
+        .order('id', { ascending: true })
+      if (linkedError) throw linkedError
+      deliveries = linkedDeliveries || []
 
-    emailSent = emailResult.sent
-    emailError = emailResult.error
-    if (!emailSent) {
-      warnings.push('EMAIL_FAILED')
-      console.log(`[API] send invoiceId=${idNum} email sent=false error=${emailError}`)
-    } else {
-      console.log(`[API] send invoiceId=${idNum} email sent ok`)
+      // invoice_id連携が無い請求書向けに、既存の期間条件（締め期間）でも拾う
+      if (
+        deliveries.length === 0 &&
+        invoice.client_id &&
+        invoice.billing_period_start &&
+        invoice.billing_period_end
+      ) {
+        const { data: periodDeliveries, error: periodError } = await supabase
+          .from('deliveries')
+          .select('*')
+          .eq('client_id', invoice.client_id)
+          .in('status', ['delivered', 'issued', 'invoiced'])
+          .gte('delivery_date', invoice.billing_period_start)
+          .lte('delivery_date', invoice.billing_period_end)
+          .eq('user_id', userId)
+          .order('delivery_date', { ascending: true })
+          .order('id', { ascending: true })
+        if (periodError) throw periodError
+        deliveries = periodDeliveries || []
+      }
+
+      if (deliveries.length > 0) {
+        const deliveryIds = deliveries
+          .map((d: any) => Number(d.id))
+          .filter((n: number) => Number.isFinite(n))
+        const { data: itemsRows, error: itemsError } = await supabase
+          .from('delivery_items')
+          .select('*')
+          .in('delivery_id', deliveryIds)
+          .order('delivery_id', { ascending: true })
+          .order('display_order', { ascending: true })
+        if (itemsError) throw itemsError
+        const itemsByDelivery = new Map<number, any[]>()
+        for (const row of (itemsRows || [])) {
+          const key = Number((row as any).delivery_id)
+          const list = itemsByDelivery.get(key) || []
+          list.push(row)
+          itemsByDelivery.set(key, list)
+        }
+        const snapshotRows = deliveries.map((delivery: any) => ({
+          portal_invoice_id: portalInvoiceId,
+          delivery_id: Number(delivery.id),
+          snapshot: {
+            delivery,
+            items: itemsByDelivery.get(Number(delivery.id)) || []
+          },
+          created_at: new Date().toISOString(),
+        }))
+        const { error: snapshotError } = await supabase
+          .from('portal_invoice_delivery_snapshots')
+          .upsert(snapshotRows, { onConflict: 'portal_invoice_id,delivery_id' })
+        if (snapshotError) throw snapshotError
+      }
+    } catch (snapshotErr) {
+      warnings.push('SNAPSHOT_FAILED')
+      console.error(`[API] send invoiceId=${idNum} snapshot failed`, snapshotErr)
     }
   }
+
+  // (4) email通知は独立。失敗しても送付済は維持
+  if (notifyEmail) {
+    try {
+      const { data: companyInfo } = await supabase
+        .from('company_info')
+        .select('company_name')
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      const emailResult = await sendInvoiceNotification({
+        to: resolvedToEmail,
+        companyName: companyInfo?.company_name || '御社',
+        clientName: client?.client_name || '',
+        invoiceNo: invoice.invoice_no || `INV-${idNum}`,
+        portalPath: portalInvoiceId ? `/portal/invoices/${portalInvoiceId}` : '/portal/invoice'
+      })
+
+      emailOk = emailResult.sent
+      emailErrorMessage = emailResult.error || null
+    } catch (err) {
+      emailOk = false
+      emailErrorMessage = err instanceof Error ? err.message : String(err)
+    }
+
+    const attempts = Number(invoice.email_notify_attempts || 0) + 1
+    const { error: emailStateError } = await supabase
+      .from('invoices')
+      .update({
+        email_notify_status: emailOk ? 'sent' : 'failed',
+        email_notified_at: emailOk ? new Date().toISOString() : null,
+        email_notify_error: emailOk ? null : (emailErrorMessage || 'UNKNOWN_EMAIL_ERROR'),
+        email_notify_attempts: attempts,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', idNum)
+      .eq('user_id', userId)
+    if (emailStateError) {
+      console.error(`[API] send invoiceId=${idNum} email state update failed`, emailStateError)
+      warnings.push('EMAIL_STATE_SAVE_FAILED')
+    }
+  }
+
+  console.log(`[API] email ok=${emailOk} error=${emailErrorMessage || ''}`)
+  if (!emailOk && notifyEmail) warnings.push('EMAIL_FAILED')
 
   return c.json({
     success: true,
@@ -3753,10 +4055,502 @@ api.post('/invoices/:id/send', async (c) => {
       sent_at: invoiceResponse?.sent_at || null,
       sent_to_email: invoiceResponse?.sent_to_email || null
     },
-    portal: { added: portalAdded },
-    email: { sent: emailSent, ...(emailError && { error: emailError }) },
+    portal: { ok: portalOk, portal_invoice_id: portalInvoiceId, ...(portalErrorMessage ? { error: portalErrorMessage } : {}) },
+    email: { ok: emailOk, ...(emailErrorMessage ? { error: emailErrorMessage } : {}), ...(notifyEmail ? {} : { skipped: true }) },
     ...(warnings.length > 0 && { warnings })
   }, 200)
+})
+
+// =====================================
+// 受け取り側ポータル API
+// =====================================
+api.get('/portal/me/companies', async (c) => {
+  const userId = getResolvedUserId(c)
+  const { data, error } = await supabase
+    .from('portal_company_profiles')
+    .select('id, display_name, postal_code, address, phone, fax, email, source, created_at, updated_at')
+    .eq('owner_user_id', userId)
+    .order('updated_at', { ascending: false })
+
+  if (error) return handleSupabaseError(c, error, 'portal_company_profiles select')
+  console.log(`[API] GET /api/portal/me/companies user_id=${userId} count=${(data || []).length}`)
+  return c.json({ success: true, profiles: data || [] })
+})
+
+api.get('/portal/invoices', async (c) => {
+  const userId = getResolvedUserId(c)
+  const profileId = (c.req.query('profile_id') || '').trim()
+  const state = (c.req.query('state') || '').trim()
+  const search = (c.req.query('search') || '').trim()
+  const { from, to, error: dateError } = getPortalDateRange(c)
+
+  if (!profileId) {
+    return c.json({ success: false, error: 'PROFILE_ID_REQUIRED', message: 'profile_id は必須です' }, 400)
+  }
+  if (dateError) {
+    return c.json({ success: false, error: dateError, message: '期間の形式が不正です（YYYY-MM-DD）' }, 400)
+  }
+  if (state && !['unconfirmed', 'approved', 'rejected'].includes(state)) {
+    return c.json({ success: false, error: 'INVALID_STATE', message: 'state は unconfirmed/approved/rejected のみ指定可能です' }, 400)
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('id', profileId)
+    .eq('owner_user_id', userId)
+    .maybeSingle()
+  if (profileError) return handleSupabaseError(c, profileError, 'portal_company_profiles validate')
+  if (!profile) {
+    return c.json({ success: false, error: 'PROFILE_NOT_FOUND', message: 'プロフィールが見つかりません' }, 404)
+  }
+
+  const { data: linkRows, error: linkError } = await supabase
+    .from('portal_profile_links')
+    .select('portal_company_id')
+    .eq('profile_id', profileId)
+  if (linkError) return handleSupabaseError(c, linkError, 'portal_profile_links select')
+  const companyIds = (linkRows || []).map((row: any) => row.portal_company_id).filter(Boolean)
+  if (companyIds.length === 0) {
+    return c.json({ success: true, invoices: [] })
+  }
+
+  let invoiceQuery = supabase
+    .from('portal_invoices')
+    .select('id, invoice_id, client_id, company_id, created_at, updated_at')
+    .in('company_id', companyIds)
+    .order('created_at', { ascending: false })
+
+  if (from) invoiceQuery = invoiceQuery.gte('created_at', `${from}T00:00:00.000Z`)
+  if (to) invoiceQuery = invoiceQuery.lte('created_at', `${to}T23:59:59.999Z`)
+
+  const { data: portalInvoices, error: invoicesError } = await invoiceQuery
+  if (invoicesError) return handleSupabaseError(c, invoicesError, 'portal_invoices list')
+  if (!portalInvoices || portalInvoices.length === 0) {
+    return c.json({ success: true, invoices: [] })
+  }
+
+  const portalInvoiceIds = portalInvoices.map((row: any) => row.id)
+  const invoiceIds = portalInvoices.map((row: any) => Number(row.invoice_id)).filter((n: number) => Number.isFinite(n))
+
+  const [statusRes, viewsRes, invoiceMetaRes] = await Promise.all([
+    supabase
+      .from('portal_invoice_status')
+      .select('portal_invoice_id, state, updated_at, rejected_reason')
+      .in('portal_invoice_id', portalInvoiceIds),
+    supabase
+      .from('portal_invoice_views')
+      .select('portal_invoice_id, first_viewed_at')
+      .eq('viewer_user_id', userId)
+      .in('portal_invoice_id', portalInvoiceIds),
+    invoiceIds.length > 0
+      ? supabase
+          .from('invoices')
+          .select('id, invoice_no, invoice_date, total_amount')
+          .in('id', invoiceIds)
+      : Promise.resolve({ data: [], error: null } as any),
+  ])
+
+  if (statusRes.error) return handleSupabaseError(c, statusRes.error, 'portal_invoice_status list')
+  if (viewsRes.error) return handleSupabaseError(c, viewsRes.error, 'portal_invoice_views list')
+  if (invoiceMetaRes.error) return handleSupabaseError(c, invoiceMetaRes.error, 'invoices meta list')
+
+  const statusMap = new Map<string, any>((statusRes.data || []).map((row: any) => [String(row.portal_invoice_id), row]))
+  const viewedSet = new Set<string>((viewsRes.data || []).map((row: any) => String(row.portal_invoice_id)))
+  const invoiceMetaMap = new Map<string, any>((invoiceMetaRes.data || []).map((row: any) => [String(row.id), row]))
+
+  let result = portalInvoices.map((row: any) => {
+    const statusRow = statusMap.get(String(row.id))
+    const meta = invoiceMetaMap.get(String(row.invoice_id))
+    const stateValue = statusRow?.state || 'unconfirmed'
+    return {
+      id: String(row.id),
+      invoice_id: row.invoice_id,
+      client_id: row.client_id,
+      company_id: row.company_id,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      state: stateValue,
+      rejected_reason: statusRow?.rejected_reason || null,
+      is_read: viewedSet.has(String(row.id)),
+      first_viewed_at: viewedSet.has(String(row.id))
+        ? (viewsRes.data || []).find((v: any) => String(v.portal_invoice_id) === String(row.id))?.first_viewed_at || null
+        : null,
+      invoice_no: meta?.invoice_no || null,
+      invoice_date: meta?.invoice_date || null,
+      total_amount: meta?.total_amount || 0,
+    }
+  })
+
+  if (state) {
+    result = result.filter((row: any) => row.state === state)
+  }
+  if (search) {
+    const lowered = search.toLowerCase()
+    result = result.filter((row: any) => {
+      const portalInvoiceId = String(row.id || '').toLowerCase()
+      const invoiceIdStr = String(row.invoice_id || '').toLowerCase()
+      const invoiceNo = String(row.invoice_no || '').toLowerCase()
+      return (
+        portalInvoiceId.includes(lowered) ||
+        invoiceIdStr.includes(lowered) ||
+        invoiceNo.includes(lowered)
+      )
+    })
+  }
+
+  return c.json({ success: true, invoices: result })
+})
+
+api.get('/portal/invoices/:portalInvoiceId', async (c) => {
+  const userId = getResolvedUserId(c)
+  const portalInvoiceId = c.req.param('portalInvoiceId')
+
+  const { data: portalInvoice, error: portalInvoiceError } = await supabase
+    .from('portal_invoices')
+    .select('id, invoice_id, client_id, company_id, created_at, updated_at')
+    .eq('id', portalInvoiceId)
+    .maybeSingle()
+  if (portalInvoiceError) return handleSupabaseError(c, portalInvoiceError, 'portal_invoices detail')
+  if (!portalInvoice) {
+    return c.json({ success: false, error: 'PORTAL_INVOICE_NOT_FOUND', message: '請求書が見つかりません' }, 404)
+  }
+
+  const { data: profileRows, error: profileRowsError } = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('owner_user_id', userId)
+  if (profileRowsError) return handleSupabaseError(c, profileRowsError, 'portal_company_profiles owner list')
+  const profileIds = (profileRows || []).map((row: any) => row.id)
+  if (profileIds.length === 0) {
+    return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+  }
+
+  const { data: accessLink, error: accessError } = await supabase
+    .from('portal_profile_links')
+    .select('id')
+    .in('profile_id', profileIds)
+    .eq('portal_company_id', portalInvoice.company_id)
+    .limit(1)
+    .maybeSingle()
+  if (accessError) return handleSupabaseError(c, accessError, 'portal_profile_links access check')
+  if (!accessLink) {
+    return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+  }
+
+  const [snapshotsRes, statusRes, eventsRes, invoiceRes, currentViewRes] = await Promise.all([
+    supabase
+      .from('portal_invoice_delivery_snapshots')
+      .select('delivery_id, snapshot, created_at')
+      .eq('portal_invoice_id', portalInvoiceId)
+      .order('delivery_id', { ascending: true }),
+    supabase
+      .from('portal_invoice_status')
+      .select('portal_invoice_id, state, rejected_reason, updated_at')
+      .eq('portal_invoice_id', portalInvoiceId)
+      .maybeSingle(),
+    supabase
+      .from('portal_invoice_events')
+      .select('id, actor_user_id, type, payload, created_at')
+      .eq('portal_invoice_id', portalInvoiceId)
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('invoices')
+      .select('id, invoice_no, invoice_date, total_amount, notes')
+      .eq('id', portalInvoice.invoice_id)
+      .maybeSingle(),
+    supabase
+      .from('portal_invoice_views')
+      .select('id, first_viewed_at')
+      .eq('portal_invoice_id', portalInvoiceId)
+      .eq('viewer_user_id', userId)
+      .maybeSingle(),
+  ])
+
+  if (snapshotsRes.error) return handleSupabaseError(c, snapshotsRes.error, 'portal snapshots detail')
+  if (statusRes.error) return handleSupabaseError(c, statusRes.error, 'portal status detail')
+  if (eventsRes.error) return handleSupabaseError(c, eventsRes.error, 'portal events detail')
+  if (invoiceRes.error) return handleSupabaseError(c, invoiceRes.error, 'invoice detail for portal')
+  if (currentViewRes.error) return handleSupabaseError(c, currentViewRes.error, 'portal view detail')
+
+  if (!currentViewRes.data) {
+    const { error: viewUpsertError } = await supabase
+      .from('portal_invoice_views')
+      .upsert(
+        {
+          portal_invoice_id: portalInvoiceId,
+          viewer_user_id: userId,
+          first_viewed_at: new Date().toISOString(),
+        },
+        { onConflict: 'portal_invoice_id,viewer_user_id' }
+      )
+    if (viewUpsertError) return handleSupabaseError(c, viewUpsertError, 'portal_invoice_views upsert')
+
+    await supabase.from('portal_invoice_events').insert({
+      portal_invoice_id: portalInvoiceId,
+      actor_user_id: userId,
+      type: 'viewed',
+      payload: null,
+    })
+  }
+
+  return c.json({
+    success: true,
+    invoice: {
+      ...portalInvoice,
+      state: statusRes.data?.state || 'unconfirmed',
+      rejected_reason: statusRes.data?.rejected_reason || null,
+      status_updated_at: statusRes.data?.updated_at || null,
+      snapshot_rows: snapshotsRes.data || [],
+      events: eventsRes.data || [],
+      base_invoice: invoiceRes.data || null,
+      is_read: true,
+      first_viewed_at: currentViewRes.data?.first_viewed_at || new Date().toISOString(),
+    },
+  })
+})
+
+api.get('/portal/invoices/:portalInvoiceId/pdf', async (c) => {
+  const userId = getResolvedUserId(c)
+  const portalInvoiceId = c.req.param('portalInvoiceId')
+
+  const detailRes = await supabase
+    .from('portal_invoices')
+    .select('id, invoice_id, company_id, created_at')
+    .eq('id', portalInvoiceId)
+    .maybeSingle()
+  if (detailRes.error) return handleSupabaseError(c, detailRes.error, 'portal invoice pdf detail')
+  if (!detailRes.data) {
+    return c.json({ success: false, error: 'PORTAL_INVOICE_NOT_FOUND', message: '請求書が見つかりません' }, 404)
+  }
+
+  const { data: profileRows, error: profileRowsError } = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('owner_user_id', userId)
+  if (profileRowsError) return handleSupabaseError(c, profileRowsError, 'portal_company_profiles owner list pdf')
+  const profileIds = (profileRows || []).map((row: any) => row.id)
+  if (profileIds.length === 0) {
+    return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+  }
+  const { data: accessLink, error: accessError } = await supabase
+    .from('portal_profile_links')
+    .select('id')
+    .in('profile_id', profileIds)
+    .eq('portal_company_id', detailRes.data.company_id)
+    .limit(1)
+    .maybeSingle()
+  if (accessError) return handleSupabaseError(c, accessError, 'portal profile access check pdf')
+  if (!accessLink) return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+
+  const invoiceId = Number(detailRes.data.invoice_id)
+  const { data: invoiceMeta } = await supabase
+    .from('invoices')
+    .select('id, invoice_no, invoice_date, total_amount')
+    .eq('id', invoiceId)
+    .maybeSingle()
+
+  const pdfBytes = buildSimplePdfBuffer([
+    'SmartBill Portal Invoice',
+    `Portal Invoice ID: ${portalInvoiceId}`,
+    `Invoice ID: ${invoiceId}`,
+    `Invoice No: ${invoiceMeta?.invoice_no || '-'}`,
+    `Invoice Date: ${invoiceMeta?.invoice_date || '-'}`,
+    `Total Amount: ${Number(invoiceMeta?.total_amount || 0).toLocaleString('ja-JP')}`,
+    `Downloaded At: ${new Date().toISOString()}`,
+  ])
+
+  return c.newResponse(pdfBytes, 200, {
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': `attachment; filename="portal-invoice-${portalInvoiceId}.pdf"`,
+  })
+})
+
+api.post('/portal/invoices/:portalInvoiceId/approve', async (c) => {
+  const userId = getResolvedUserId(c)
+  const portalInvoiceId = c.req.param('portalInvoiceId')
+
+  const { data: portalInvoice, error: invoiceError } = await supabase
+    .from('portal_invoices')
+    .select('id, company_id')
+    .eq('id', portalInvoiceId)
+    .maybeSingle()
+  if (invoiceError) return handleSupabaseError(c, invoiceError, 'portal invoice approve check')
+  if (!portalInvoice) {
+    return c.json({ success: false, error: 'PORTAL_INVOICE_NOT_FOUND', message: '請求書が見つかりません' }, 404)
+  }
+  const { data: profileRows, error: profileRowsError } = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('owner_user_id', userId)
+  if (profileRowsError) return handleSupabaseError(c, profileRowsError, 'portal profile list approve')
+  const profileIds = (profileRows || []).map((row: any) => row.id)
+  const { data: accessLink, error: accessError } = await supabase
+    .from('portal_profile_links')
+    .select('id')
+    .in('profile_id', profileIds.length > 0 ? profileIds : ['00000000-0000-0000-0000-000000000000'])
+    .eq('portal_company_id', portalInvoice.company_id)
+    .limit(1)
+    .maybeSingle()
+  if (accessError) return handleSupabaseError(c, accessError, 'portal link access approve')
+  if (!accessLink) return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+
+  const now = new Date().toISOString()
+  const { error: statusError } = await supabase
+    .from('portal_invoice_status')
+    .upsert(
+      {
+        portal_invoice_id: portalInvoiceId,
+        state: 'approved',
+        rejected_reason: null,
+        updated_at: now,
+      },
+      { onConflict: 'portal_invoice_id' }
+    )
+  if (statusError) return handleSupabaseError(c, statusError, 'portal_invoice_status approve')
+
+  const { error: eventError } = await supabase
+    .from('portal_invoice_events')
+    .insert({
+      portal_invoice_id: portalInvoiceId,
+      actor_user_id: userId,
+      type: 'approved',
+      payload: null,
+      created_at: now,
+    })
+  if (eventError) return handleSupabaseError(c, eventError, 'portal_invoice_events approve')
+
+  return c.json({ success: true, state: 'approved' })
+})
+
+api.post('/portal/invoices/:portalInvoiceId/reject', async (c) => {
+  const userId = getResolvedUserId(c)
+  const portalInvoiceId = c.req.param('portalInvoiceId')
+  const body = await c.req.json().catch(() => ({}))
+  const reason = String(body.reason || '').trim()
+  if (!reason) {
+    return c.json({ success: false, error: 'REASON_REQUIRED', message: '差し戻し理由は必須です' }, 400)
+  }
+
+  const { data: portalInvoice, error: invoiceError } = await supabase
+    .from('portal_invoices')
+    .select('id, company_id')
+    .eq('id', portalInvoiceId)
+    .maybeSingle()
+  if (invoiceError) return handleSupabaseError(c, invoiceError, 'portal invoice reject check')
+  if (!portalInvoice) {
+    return c.json({ success: false, error: 'PORTAL_INVOICE_NOT_FOUND', message: '請求書が見つかりません' }, 404)
+  }
+  const { data: profileRows, error: profileRowsError } = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('owner_user_id', userId)
+  if (profileRowsError) return handleSupabaseError(c, profileRowsError, 'portal profile list reject')
+  const profileIds = (profileRows || []).map((row: any) => row.id)
+  const { data: accessLink, error: accessError } = await supabase
+    .from('portal_profile_links')
+    .select('id')
+    .in('profile_id', profileIds.length > 0 ? profileIds : ['00000000-0000-0000-0000-000000000000'])
+    .eq('portal_company_id', portalInvoice.company_id)
+    .limit(1)
+    .maybeSingle()
+  if (accessError) return handleSupabaseError(c, accessError, 'portal link access reject')
+  if (!accessLink) return c.json({ success: false, error: 'FORBIDDEN', message: 'アクセス権がありません' }, 403)
+
+  const now = new Date().toISOString()
+  const { error: statusError } = await supabase
+    .from('portal_invoice_status')
+    .upsert(
+      {
+        portal_invoice_id: portalInvoiceId,
+        state: 'rejected',
+        rejected_reason: reason,
+        updated_at: now,
+      },
+      { onConflict: 'portal_invoice_id' }
+    )
+  if (statusError) return handleSupabaseError(c, statusError, 'portal_invoice_status reject')
+
+  const { error: eventError } = await supabase
+    .from('portal_invoice_events')
+    .insert({
+      portal_invoice_id: portalInvoiceId,
+      actor_user_id: userId,
+      type: 'rejected',
+      payload: { reason },
+      created_at: now,
+    })
+  if (eventError) return handleSupabaseError(c, eventError, 'portal_invoice_events reject')
+
+  return c.json({ success: true, state: 'rejected' })
+})
+
+api.get('/portal/company-profile/:profileId', async (c) => {
+  const userId = getResolvedUserId(c)
+  const profileId = c.req.param('profileId')
+
+  const profileRes = await supabase
+    .from('portal_company_profiles')
+    .select('id, display_name, postal_code, address, phone, fax, email, source, created_at, updated_at')
+    .eq('id', profileId)
+    .eq('owner_user_id', userId)
+    .maybeSingle()
+  if (profileRes.error) return handleSupabaseError(c, profileRes.error, 'portal_company_profiles detail')
+  if (!profileRes.data) {
+    return c.json({ success: false, error: 'PROFILE_NOT_FOUND', message: 'プロフィールが見つかりません' }, 404)
+  }
+
+  const requestsRes = await supabase
+    .from('portal_company_change_requests')
+    .select('id, requested_by_user_id, payload, note, status, created_at')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: false })
+  if (requestsRes.error) return handleSupabaseError(c, requestsRes.error, 'portal_company_change_requests list')
+
+  return c.json({ success: true, profile: profileRes.data, change_requests: requestsRes.data || [] })
+})
+
+api.post('/portal/company-profile/:profileId/change-requests', async (c) => {
+  const userId = getResolvedUserId(c)
+  const profileId = c.req.param('profileId')
+  const body = await c.req.json().catch(() => ({}))
+
+  const profileRes = await supabase
+    .from('portal_company_profiles')
+    .select('id')
+    .eq('id', profileId)
+    .eq('owner_user_id', userId)
+    .maybeSingle()
+  if (profileRes.error) return handleSupabaseError(c, profileRes.error, 'portal_company_profiles check')
+  if (!profileRes.data) {
+    return c.json({ success: false, error: 'PROFILE_NOT_FOUND', message: 'プロフィールが見つかりません' }, 404)
+  }
+
+  const allowedKeys = ['display_name', 'postal_code', 'address', 'phone', 'fax', 'email']
+  const payload: Record<string, string> = {}
+  for (const key of allowedKeys) {
+    if (body[key] !== undefined && body[key] !== null) {
+      payload[key] = String(body[key]).trim()
+    }
+  }
+  if (Object.keys(payload).length === 0) {
+    return c.json({ success: false, error: 'PAYLOAD_REQUIRED', message: '変更依頼内容が空です' }, 400)
+  }
+
+  const { data, error } = await supabase
+    .from('portal_company_change_requests')
+    .insert({
+      profile_id: profileId,
+      requested_by_user_id: userId,
+      payload,
+      note: body.note ? String(body.note).trim() : null,
+      status: 'pending',
+    })
+    .select('id, profile_id, requested_by_user_id, payload, note, status, created_at')
+    .single()
+  if (error) return handleSupabaseError(c, error, 'portal_company_change_requests insert')
+
+  return c.json({ success: true, request: data })
 })
 
 // 請求書削除

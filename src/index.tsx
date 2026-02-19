@@ -10913,7 +10913,9 @@ app.get('/invoices', async (c) => {
                 renderInvoiceTable();
                 renderSidebarInvoices();
                 var msg = '送付しました。';
-                if (data.warnings && data.warnings.includes('EMAIL_FAILED')) {
+                if (data.portal && data.portal.ok && data.email && data.email.ok === false) {
+                  msg += ' 受取ページへの追加は完了（送付済は維持）しました。通知メールは失敗したため、後で再送できます。';
+                } else if (data.warnings && data.warnings.includes('EMAIL_FAILED')) {
                   msg += ' メール送信のみ失敗（再通知できます）';
                 }
                 window.SmartBill.showSuccessDialog(msg);
@@ -11065,6 +11067,497 @@ app.get('/invoices', async (c) => {
       `}} />
     </Layout>
   )
+})
+
+const renderPortalPage = (initialPortalInvoiceId: string = '') => (
+  <Layout title="受け取りポータル" currentPath="/" hideTitle={true}>
+    <div id="portalApp" class="space-y-4">
+      <div class="bg-gradient-to-r from-indigo-600 to-blue-600 rounded-xl shadow-lg p-5 text-white">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <h1 class="text-2xl font-bold"><i class="fas fa-inbox mr-2"></i>取引先 受け取りポータル</h1>
+            <p class="text-sm text-blue-100 mt-1">現在：<span id="currentCompanyName" class="font-semibold">会社を選択してください</span>で受け取り中</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="text-sm font-medium whitespace-nowrap">会社切替</label>
+            <select id="profileSelect" class="text-gray-800 border border-blue-200 rounded-lg px-3 py-2 min-w-[260px]"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <section class="xl:col-span-9 space-y-4">
+          <div class="bg-white rounded-xl shadow p-4">
+            <div class="flex items-center gap-2 border-b pb-3 mb-4">
+              <button id="tabInvoices" class="px-3 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white">請求書</button>
+              <button id="tabCompany" class="px-3 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700">受取会社情報</button>
+            </div>
+
+            <div id="invoicesView">
+              <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2 mb-4">
+                <input type="date" id="filterFrom" class="border rounded-lg px-3 py-2 text-sm" />
+                <input type="date" id="filterTo" class="border rounded-lg px-3 py-2 text-sm" />
+                <select id="filterState" class="border rounded-lg px-3 py-2 text-sm">
+                  <option value="">全ステータス</option>
+                  <option value="unconfirmed">未確認</option>
+                  <option value="approved">承認</option>
+                  <option value="rejected">差し戻し</option>
+                </select>
+                <input type="text" id="filterSearch" placeholder="請求書番号/IDで検索" class="border rounded-lg px-3 py-2 text-sm" />
+                <button id="applyFiltersBtn" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700">
+                  <i class="fas fa-filter mr-1"></i>絞り込み
+                </button>
+              </div>
+
+              <div class="overflow-x-auto border rounded-lg">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="text-left px-3 py-2">既読</th>
+                      <th class="text-left px-3 py-2">請求書番号</th>
+                      <th class="text-left px-3 py-2">発行日</th>
+                      <th class="text-right px-3 py-2">金額</th>
+                      <th class="text-left px-3 py-2">ステータス</th>
+                    </tr>
+                  </thead>
+                  <tbody id="portalInvoiceTableBody" class="divide-y"></tbody>
+                </table>
+              </div>
+
+              <div id="portalInvoiceDetail" class="mt-4 hidden">
+                <div class="bg-gray-50 border rounded-xl p-4">
+                  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <h3 class="text-lg font-bold text-gray-800">請求書詳細</h3>
+                    <div class="flex gap-2">
+                      <button id="downloadPdfBtn" class="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
+                        <i class="fas fa-file-pdf mr-1"></i>PDFダウンロード
+                      </button>
+                      <button id="approveBtn" class="px-3 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+                        <i class="fas fa-check mr-1"></i>承認
+                      </button>
+                      <button id="rejectBtn" class="px-3 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700">
+                        <i class="fas fa-undo mr-1"></i>差し戻し
+                      </button>
+                    </div>
+                  </div>
+                  <div id="portalInvoiceMeta" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"></div>
+                  <div class="mt-4">
+                    <h4 class="font-semibold text-gray-700 mb-2">納品スナップショット</h4>
+                    <div id="snapshotList" class="space-y-2"></div>
+                  </div>
+                  <div class="mt-4">
+                    <h4 class="font-semibold text-gray-700 mb-2">履歴</h4>
+                    <ul id="eventTimeline" class="space-y-2 text-sm"></ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="companyView" class="hidden">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm" id="companyProfileFields"></div>
+              <div class="mt-4 flex items-center justify-between">
+                <h3 class="text-base font-semibold">修正依頼履歴</h3>
+                <button id="openChangeRequestModalBtn" class="px-3 py-2 bg-amber-500 text-white rounded-lg text-sm hover:bg-amber-600">
+                  <i class="fas fa-pen mr-1"></i>修正依頼を作成
+                </button>
+              </div>
+              <div class="mt-2 overflow-x-auto border rounded-lg">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="text-left px-3 py-2">日時</th>
+                      <th class="text-left px-3 py-2">内容</th>
+                      <th class="text-left px-3 py-2">理由</th>
+                      <th class="text-left px-3 py-2">状態</th>
+                    </tr>
+                  </thead>
+                  <tbody id="changeRequestTableBody" class="divide-y"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="xl:col-span-3">
+          <div class="space-y-4">
+            <div class="bg-white rounded-xl shadow p-4">
+              <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullhorn mr-2 text-blue-600"></i>お知らせ</h3>
+              <ul class="text-sm text-gray-600 space-y-2">
+                <li class="border-b pb-2">・毎月末はアクセス集中が見込まれます。お早めにご確認ください。</li>
+                <li class="border-b pb-2">・差し戻し時は理由を具体的に記載すると対応がスムーズです。</li>
+                <li>・今後、受取通知メールの設定機能を追加予定です。</li>
+              </ul>
+            </div>
+            <div class="bg-white rounded-xl shadow p-4">
+              <h3 class="font-bold text-gray-800 mb-2"><i class="fas fa-bullseye mr-2 text-purple-600"></i>広告/案内</h3>
+              <div class="space-y-2">
+                <div class="border rounded-lg p-3 bg-gradient-to-r from-purple-50 to-indigo-50">
+                  <p class="text-sm font-semibold text-gray-800">業務自動化オプション</p>
+                  <p class="text-xs text-gray-600">承認フローをテンプレート化して作業を短縮。</p>
+                </div>
+                <div class="border rounded-lg p-3 bg-gradient-to-r from-emerald-50 to-teal-50">
+                  <p class="text-sm font-semibold text-gray-800">電子帳簿保存対応</p>
+                  <p class="text-xs text-gray-600">受領書類の検索性向上と保管効率化を実現。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div id="changeRequestModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+      <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-lg font-bold text-gray-800">会社情報 修正依頼</h3>
+          <button id="closeChangeRequestModalBtn" class="text-gray-500 hover:text-gray-700"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
+          <input id="reqDisplayName" type="text" placeholder="会社名" class="border rounded-lg px-3 py-2" />
+          <input id="reqPostalCode" type="text" placeholder="郵便番号" class="border rounded-lg px-3 py-2" />
+          <input id="reqPhone" type="text" placeholder="電話番号" class="border rounded-lg px-3 py-2" />
+          <input id="reqFax" type="text" placeholder="FAX" class="border rounded-lg px-3 py-2" />
+          <input id="reqEmail" type="email" placeholder="メール" class="border rounded-lg px-3 py-2 md:col-span-2" />
+          <textarea id="reqAddress" rows={2} placeholder="住所" class="border rounded-lg px-3 py-2 md:col-span-2"></textarea>
+        </div>
+        <textarea id="reqNote" rows={3} placeholder="修正理由（任意）" class="border rounded-lg px-3 py-2 w-full text-sm"></textarea>
+        <div class="mt-4 flex justify-end gap-2">
+          <button id="cancelChangeRequestBtn" class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">キャンセル</button>
+          <button id="submitChangeRequestBtn" class="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">依頼を送信</button>
+        </div>
+      </div>
+    </div>
+
+    <script dangerouslySetInnerHTML={{ __html: `
+      (function(){
+        var initialPortalInvoiceId = ${JSON.stringify(initialPortalInvoiceId)};
+        var state = {
+          profiles: [],
+          selectedProfileId: '',
+          invoices: [],
+          selectedInvoice: null,
+          profileDetail: null,
+          changeRequests: []
+        };
+
+        function statusLabel(s) {
+          if (s === 'approved') return '承認';
+          if (s === 'rejected') return '差し戻し';
+          return '未確認';
+        }
+
+        function statusClass(s) {
+          if (s === 'approved') return 'bg-green-100 text-green-700';
+          if (s === 'rejected') return 'bg-red-100 text-red-700';
+          return 'bg-yellow-100 text-yellow-700';
+        }
+
+        function formatDate(v) {
+          if (!v) return '-';
+          try { return new Date(v).toLocaleString('ja-JP'); } catch { return v; }
+        }
+
+        function qs(id){ return document.getElementById(id); }
+
+        function renderProfileSelector() {
+          var select = qs('profileSelect');
+          if (!select) return;
+          select.innerHTML = state.profiles.map(function(p){
+            return '<option value="' + p.id + '">' + (p.display_name || '名称未設定') + '</option>';
+          }).join('');
+          if (state.selectedProfileId) select.value = state.selectedProfileId;
+          var current = state.profiles.find(function(p){ return p.id === state.selectedProfileId; });
+          qs('currentCompanyName').textContent = current ? current.display_name : '会社を選択してください';
+        }
+
+        function renderInvoiceList() {
+          var tbody = qs('portalInvoiceTableBody');
+          if (!tbody) return;
+          if (!state.invoices.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="px-3 py-6 text-center text-gray-500">請求書がありません</td></tr>';
+            return;
+          }
+          tbody.innerHTML = state.invoices.map(function(inv){
+            var unread = inv.is_read ? '<span class="text-xs text-gray-500">既読</span>' : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">未読</span>';
+            var invoiceNo = inv.invoice_no || ('INV-' + String(inv.invoice_id || ''));
+            return '<tr class="hover:bg-gray-50 cursor-pointer portal-invoice-row" data-id="' + inv.id + '">' +
+              '<td class="px-3 py-2">' + unread + '</td>' +
+              '<td class="px-3 py-2 font-medium text-indigo-700">' + invoiceNo + '</td>' +
+              '<td class="px-3 py-2">' + (inv.invoice_date || '-') + '</td>' +
+              '<td class="px-3 py-2 text-right">¥' + Number(inv.total_amount || 0).toLocaleString() + '</td>' +
+              '<td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(inv.state) + '">' + statusLabel(inv.state) + '</span></td>' +
+              '</tr>';
+          }).join('');
+        }
+
+        function renderInvoiceDetail() {
+          var root = qs('portalInvoiceDetail');
+          if (!root) return;
+          if (!state.selectedInvoice) {
+            root.classList.add('hidden');
+            return;
+          }
+          root.classList.remove('hidden');
+          var inv = state.selectedInvoice;
+          qs('portalInvoiceMeta').innerHTML = '' +
+            '<div><p class="text-gray-500">ポータル請求書ID</p><p class="font-semibold">' + inv.id + '</p></div>' +
+            '<div><p class="text-gray-500">請求書番号</p><p class="font-semibold">' + ((inv.base_invoice && inv.base_invoice.invoice_no) || '-') + '</p></div>' +
+            '<div><p class="text-gray-500">発行日</p><p class="font-semibold">' + ((inv.base_invoice && inv.base_invoice.invoice_date) || '-') + '</p></div>' +
+            '<div><p class="text-gray-500">状態</p><p class="font-semibold"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(inv.state) + '">' + statusLabel(inv.state) + '</span></p></div>';
+
+          var snapshots = inv.snapshot_rows || [];
+          qs('snapshotList').innerHTML = snapshots.length ? snapshots.map(function(row){
+            var delivery = (row.snapshot && row.snapshot.delivery) || {};
+            var items = (row.snapshot && row.snapshot.items) || [];
+            return '<div class="border rounded-lg p-3 bg-white">' +
+              '<p class="text-sm font-semibold text-gray-800">納品ID: ' + (row.delivery_id || '-') + ' / 納品日: ' + (delivery.delivery_date || '-') + '</p>' +
+              '<p class="text-xs text-gray-500 mt-1">明細件数: ' + items.length + '</p>' +
+            '</div>';
+          }).join('') : '<p class="text-sm text-gray-500">スナップショットがありません</p>';
+
+          var events = inv.events || [];
+          qs('eventTimeline').innerHTML = events.length ? events.map(function(ev){
+            var payload = ev.payload ? JSON.stringify(ev.payload) : '';
+            return '<li class="border-l-2 border-blue-200 pl-3 py-1">' +
+              '<p class="font-medium text-gray-800">' + ev.type + '</p>' +
+              '<p class="text-xs text-gray-500">' + formatDate(ev.created_at) + (payload ? ' / ' + payload : '') + '</p>' +
+            '</li>';
+          }).join('') : '<li class="text-gray-500">履歴はまだありません</li>';
+        }
+
+        function renderCompanyProfile() {
+          var fields = qs('companyProfileFields');
+          if (!fields) return;
+          var p = state.profileDetail;
+          if (!p) {
+            fields.innerHTML = '<p class="text-sm text-gray-500">会社プロフィールが未設定です</p>';
+            return;
+          }
+          fields.innerHTML = [
+            ['会社名', p.display_name || '-'],
+            ['郵便番号', p.postal_code || '-'],
+            ['住所', p.address || '-'],
+            ['電話', p.phone || '-'],
+            ['FAX', p.fax || '-'],
+            ['メール', p.email || '-']
+          ].map(function(row){
+            return '<div class="border rounded-lg p-3 bg-gray-50"><p class="text-gray-500">' + row[0] + '</p><p class="font-semibold text-gray-800 break-all">' + row[1] + '</p></div>';
+          }).join('');
+        }
+
+        function renderChangeRequests() {
+          var tbody = qs('changeRequestTableBody');
+          if (!tbody) return;
+          var rows = state.changeRequests || [];
+          if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="px-3 py-6 text-center text-gray-500">修正依頼はありません</td></tr>';
+            return;
+          }
+          tbody.innerHTML = rows.map(function(r){
+            var payload = r.payload ? Object.keys(r.payload).map(function(k){ return k + ': ' + r.payload[k]; }).join(', ') : '-';
+            return '<tr>' +
+              '<td class="px-3 py-2">' + formatDate(r.created_at) + '</td>' +
+              '<td class="px-3 py-2">' + payload + '</td>' +
+              '<td class="px-3 py-2">' + (r.note || '-') + '</td>' +
+              '<td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(r.status === 'pending' ? 'unconfirmed' : r.status) + '">' + r.status + '</span></td>' +
+            '</tr>';
+          }).join('');
+        }
+
+        async function loadProfiles() {
+          var res = await axios.get('/api/portal/me/companies');
+          state.profiles = (res.data && res.data.profiles) || [];
+          var saved = localStorage.getItem('portal_profile_id') || '';
+          var defaultProfile = state.profiles.find(function(p){ return p.id === saved; }) || state.profiles[0] || null;
+          state.selectedProfileId = defaultProfile ? defaultProfile.id : '';
+          renderProfileSelector();
+        }
+
+        async function loadInvoices() {
+          if (!state.selectedProfileId) {
+            state.invoices = [];
+            renderInvoiceList();
+            return;
+          }
+          var params = { profile_id: state.selectedProfileId };
+          if (qs('filterFrom').value) params.from = qs('filterFrom').value;
+          if (qs('filterTo').value) params.to = qs('filterTo').value;
+          if (qs('filterState').value) params.state = qs('filterState').value;
+          if (qs('filterSearch').value) params.search = qs('filterSearch').value;
+          var res = await axios.get('/api/portal/invoices', { params: params });
+          state.invoices = (res.data && res.data.invoices) || [];
+          renderInvoiceList();
+        }
+
+        async function loadInvoiceDetail(portalInvoiceId) {
+          var res = await axios.get('/api/portal/invoices/' + encodeURIComponent(portalInvoiceId));
+          state.selectedInvoice = res.data && res.data.invoice ? res.data.invoice : null;
+          renderInvoiceDetail();
+          await loadInvoices();
+        }
+
+        async function loadCompanyProfile() {
+          if (!state.selectedProfileId) {
+            state.profileDetail = null;
+            state.changeRequests = [];
+            renderCompanyProfile();
+            renderChangeRequests();
+            return;
+          }
+          var res = await axios.get('/api/portal/company-profile/' + encodeURIComponent(state.selectedProfileId));
+          state.profileDetail = res.data && res.data.profile ? res.data.profile : null;
+          state.changeRequests = res.data && res.data.change_requests ? res.data.change_requests : [];
+          renderCompanyProfile();
+          renderChangeRequests();
+        }
+
+        async function approveCurrent() {
+          if (!state.selectedInvoice) return;
+          await axios.post('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/approve');
+          await loadInvoiceDetail(state.selectedInvoice.id);
+        }
+
+        async function rejectCurrent() {
+          if (!state.selectedInvoice) return;
+          var reason = window.prompt('差し戻し理由を入力してください');
+          if (!reason || !reason.trim()) return;
+          await axios.post('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/reject', { reason: reason.trim() });
+          await loadInvoiceDetail(state.selectedInvoice.id);
+        }
+
+        function openChangeRequestModal() {
+          var p = state.profileDetail || {};
+          qs('reqDisplayName').value = p.display_name || '';
+          qs('reqPostalCode').value = p.postal_code || '';
+          qs('reqAddress').value = p.address || '';
+          qs('reqPhone').value = p.phone || '';
+          qs('reqFax').value = p.fax || '';
+          qs('reqEmail').value = p.email || '';
+          qs('reqNote').value = '';
+          qs('changeRequestModal').classList.remove('hidden');
+          qs('changeRequestModal').classList.add('flex');
+        }
+
+        function closeChangeRequestModal() {
+          qs('changeRequestModal').classList.add('hidden');
+          qs('changeRequestModal').classList.remove('flex');
+        }
+
+        async function submitChangeRequest() {
+          if (!state.selectedProfileId) return;
+          var payload = {
+            display_name: qs('reqDisplayName').value,
+            postal_code: qs('reqPostalCode').value,
+            address: qs('reqAddress').value,
+            phone: qs('reqPhone').value,
+            fax: qs('reqFax').value,
+            email: qs('reqEmail').value,
+            note: qs('reqNote').value
+          };
+          await axios.post('/api/portal/company-profile/' + encodeURIComponent(state.selectedProfileId) + '/change-requests', payload);
+          closeChangeRequestModal();
+          alert('修正依頼を送信しました');
+          await loadCompanyProfile();
+        }
+
+        function setTab(view) {
+          var invBtn = qs('tabInvoices');
+          var companyBtn = qs('tabCompany');
+          var invView = qs('invoicesView');
+          var companyView = qs('companyView');
+          var invoiceActive = view === 'invoices';
+          invBtn.className = 'px-3 py-2 rounded-lg text-sm font-medium ' + (invoiceActive ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700');
+          companyBtn.className = 'px-3 py-2 rounded-lg text-sm font-medium ' + (!invoiceActive ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700');
+          invView.classList.toggle('hidden', !invoiceActive);
+          companyView.classList.toggle('hidden', invoiceActive);
+        }
+
+        async function init() {
+          try {
+            await loadProfiles();
+            if (state.selectedProfileId) {
+              localStorage.setItem('portal_profile_id', state.selectedProfileId);
+            }
+            await loadInvoices();
+            await loadCompanyProfile();
+            if (initialPortalInvoiceId) {
+              await loadInvoiceDetail(initialPortalInvoiceId);
+            }
+          } catch (e) {
+            console.error(e);
+            alert('ポータルデータの読み込みに失敗しました');
+          }
+        }
+
+        document.addEventListener('click', async function(ev){
+          var target = ev.target;
+          var row = target && target.closest ? target.closest('.portal-invoice-row') : null;
+          if (row) {
+            await loadInvoiceDetail(row.getAttribute('data-id'));
+            return;
+          }
+          if (target && target.closest && target.closest('#applyFiltersBtn')) {
+            await loadInvoices();
+            return;
+          }
+          if (target && target.closest && target.closest('#approveBtn')) {
+            await approveCurrent();
+            return;
+          }
+          if (target && target.closest && target.closest('#rejectBtn')) {
+            await rejectCurrent();
+            return;
+          }
+          if (target && target.closest && target.closest('#downloadPdfBtn') && state.selectedInvoice) {
+            window.open('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/pdf', '_blank');
+            return;
+          }
+          if (target && target.closest && target.closest('#openChangeRequestModalBtn')) {
+            openChangeRequestModal();
+            return;
+          }
+          if (target && target.closest && (target.closest('#closeChangeRequestModalBtn') || target.closest('#cancelChangeRequestBtn') || target.id === 'changeRequestModal')) {
+            closeChangeRequestModal();
+            return;
+          }
+          if (target && target.closest && target.closest('#submitChangeRequestBtn')) {
+            await submitChangeRequest();
+            return;
+          }
+          if (target && target.closest && target.closest('#tabInvoices')) {
+            setTab('invoices');
+            return;
+          }
+          if (target && target.closest && target.closest('#tabCompany')) {
+            setTab('company');
+            return;
+          }
+        });
+
+        qs('profileSelect').addEventListener('change', async function(){
+          state.selectedProfileId = this.value;
+          localStorage.setItem('portal_profile_id', state.selectedProfileId);
+          state.selectedInvoice = null;
+          renderProfileSelector();
+          renderInvoiceDetail();
+          await loadInvoices();
+          await loadCompanyProfile();
+        });
+
+        setTab('invoices');
+        init();
+      })();
+    `}} />
+  </Layout>
+)
+
+app.get('/portal', async (c) => {
+  return c.html(renderPortalPage(''))
+})
+
+app.get('/portal/invoices/:portalInvoiceId', async (c) => {
+  const portalInvoiceId = c.req.param('portalInvoiceId')
+  return c.html(renderPortalPage(portalInvoiceId))
 })
 
 export default app

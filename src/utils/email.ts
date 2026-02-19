@@ -13,12 +13,11 @@ export interface SendInvoiceNotificationParams {
   companyName: string
   clientName: string
   invoiceNo: string
+  portalPath?: string
 }
 
 /**
  * 請求書送付通知メールを送信
- * TODO: 受取ページURL - ポータル画面実装時に差し替える（例: process.env.PORTAL_BASE_URL + '/invoice/' + invoiceId）
- * TODO: パスワード再設定URL - 認証実装時に差し替える
  */
 export async function sendInvoiceNotification(
   params: SendInvoiceNotificationParams
@@ -33,15 +32,13 @@ export async function sendInvoiceNotification(
     return { sent: false, error: 'NO_RECIPIENT' }
   }
 
-  // TODO: 受取ページURL - ポータル画面実装時に差し替え
-  const receivePageUrl = process.env.PORTAL_BASE_URL
-    ? `${process.env.PORTAL_BASE_URL}/invoice`
-    : 'https://example.com/portal/invoice'
-
-  // TODO: パスワード再設定URL - 認証実装時に差し替え
-  const passwordResetUrl = process.env.PORTAL_BASE_URL
-    ? `${process.env.PORTAL_BASE_URL}/reset-password`
-    : 'https://example.com/portal/reset-password'
+  const baseUrl = (process.env.PORTAL_BASE_URL || 'http://localhost:5173').replace(/\/+$/, '')
+  const portalPath = params.portalPath && params.portalPath.trim()
+    ? params.portalPath.trim()
+    : '/portal/invoice'
+  const normalizedPortalPath = portalPath.startsWith('/') ? portalPath : `/${portalPath}`
+  const receivePageUrl = `${baseUrl}${normalizedPortalPath}`
+  const passwordResetUrl = `${baseUrl}/portal/reset-password`
 
   const subject = `【${params.companyName}】請求書が届きました`
   const body = `
