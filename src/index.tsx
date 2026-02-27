@@ -10450,6 +10450,64 @@ app.get('/invoices', async (c) => {
             console.error(e);
           }
         }
+
+        async function buildInvoicePdfBase64ForSend(invoiceId) {
+          function formatMoneyForSend(value) {
+            return '¥' + Number(value || 0).toLocaleString('ja-JP');
+          }
+          var jsPdfCtor = window.jspdf && window.jspdf.jsPDF;
+          if (!jsPdfCtor) {
+            throw new Error('PDF_LIBRARY_NOT_READY');
+          }
+          var invoiceRes = await axios.get('/api/invoices/' + invoiceId);
+          var invoiceData = invoiceRes.data || {};
+          var doc = new jsPdfCtor({ orientation: 'p', unit: 'pt', format: 'a4' });
+          var left = 40;
+          var y = 46;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(16);
+          doc.text('Invoice', left, y);
+          y += 26;
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(11);
+          doc.text('Invoice No: ' + String(invoiceData.invoice_no || ('INV-' + invoiceId)), left, y); y += 16;
+          doc.text('Invoice Date: ' + String(invoiceData.invoice_date || '-'), left, y); y += 16;
+          doc.text('Client: ' + String(invoiceData.client_name || '-'), left, y); y += 16;
+          doc.text('Subtotal: ' + formatMoneyForSend(invoiceData.subtotal || 0), left, y); y += 16;
+          doc.text('Tax: ' + formatMoneyForSend(invoiceData.tax_amount || 0), left, y); y += 16;
+          doc.text('Total: ' + formatMoneyForSend(invoiceData.total_amount || 0), left, y); y += 24;
+
+          doc.setFont('helvetica', 'bold');
+          doc.text('Items', left, y);
+          y += 16;
+          doc.setFont('helvetica', 'normal');
+          var items = Array.isArray(invoiceData.items) ? invoiceData.items : [];
+          for (var i = 0; i < items.length; i++) {
+            if (y > 780) {
+              doc.addPage();
+              y = 46;
+            }
+            var item = items[i] || {};
+            var line = String(i + 1) + '. ' +
+              String(item.product_name || '-') +
+              ' x' + String(Number(item.quantity || 0)) +
+              ' @ ' + formatMoneyForSend(item.unit_price || 0) +
+              ' = ' + formatMoneyForSend(item.amount || (Number(item.quantity || 0) * Number(item.unit_price || 0)));
+            doc.text(line.slice(0, 120), left, y);
+            y += 14;
+          }
+
+          var bytes = new Uint8Array(doc.output('arraybuffer'));
+          if (!bytes.length) {
+            throw new Error('PDF_BYTES_EMPTY');
+          }
+          var binary = '';
+          for (var j = 0; j < bytes.length; j++) {
+            binary += String.fromCharCode(bytes[j]);
+          }
+          return btoa(binary);
+        }
         
         // 削除
         async function deleteInvoice() {
@@ -10868,7 +10926,11 @@ app.get('/invoices', async (c) => {
           document.getElementById('sendToClientBtn').addEventListener('click', openSendToClientModal);
           document.getElementById('closeSendToClientModal').addEventListener('click', closeSendToClientModal);
           document.getElementById('executeSendToClientBtn').addEventListener('click', async function() {
-            if (!currentInvoiceId) return;
+            if (!Number.isFinite(Number(currentInvoiceId)) || Number(currentInvoiceId) <= 0) {
+              document.getElementById('sendToClientError').textContent = '請求書IDが不正なため送付できません。';
+              document.getElementById('sendToClientError').classList.remove('hidden');
+              return;
+            }
             var addToPortal = document.getElementById('sendToClientAddPortal').checked;
             var notifyEmail = document.getElementById('sendToClientNotifyEmail').checked;
             if (!addToPortal && !notifyEmail) {
@@ -10882,10 +10944,15 @@ app.get('/invoices', async (c) => {
             btn.disabled = true;
             btn.textContent = '送付中…';
             try {
+              var officialPdfBase64 = await buildInvoicePdfBase64ForSend(currentInvoiceId);
+              if (!officialPdfBase64) {
+                throw new Error('PDF_GENERATION_FAILED');
+              }
               var res = await axios.post('/api/invoices/' + currentInvoiceId + '/send', {
                 add_to_portal: addToPortal,
                 notify_email: notifyEmail,
-                override_email: null
+                override_email: null,
+                pdf_base64: officialPdfBase64
               });
               var data = res.data;
               if (data && data.success) {
@@ -10924,7 +10991,13 @@ app.get('/invoices', async (c) => {
                 errEl.classList.remove('hidden');
               }
             } catch (e) {
-              var errMsg = (e.response && e.response.data && e.response.data.message) ? e.response.data.message : (e.response && e.response.data && e.response.data.error) ? e.response.data.error : '送付に失敗しました。';
+              var errMsg = (e.response && e.response.data && e.response.data.message)
+                ? e.response.data.message
+                : (e.response && e.response.data && e.response.data.error)
+                  ? e.response.data.error
+                  : (e && e.message)
+                    ? e.message
+                    : '送付に失敗しました。';
               errEl.textContent = errMsg;
               errEl.classList.remove('hidden');
               console.error(e);
@@ -11076,11 +11149,10 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
         <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <h1 class="text-2xl font-bold"><i class="fas fa-inbox mr-2"></i>取引先 受け取りポータル</h1>
-            <p class="text-sm text-blue-100 mt-1">現在：<span id="currentCompanyName" class="font-semibold">会社を選択してください</span>で受け取り中</p>
           </div>
-          <div class="flex items-center gap-2">
-            <label class="text-sm font-medium whitespace-nowrap">会社切替</label>
-            <select id="profileSelect" class="text-gray-800 border border-blue-200 rounded-lg px-3 py-2 min-w-[260px]"></select>
+          <div class="flex items-center gap-2 text-sm">
+            <span class="text-blue-100 whitespace-nowrap">御社名：</span>
+            <span id="currentCompanyName" class="font-semibold">会社を選択してください</span>
           </div>
         </div>
       </div>
@@ -11095,8 +11167,14 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
 
             <div id="invoicesView">
               <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2 mb-4">
-                <input type="date" id="filterFrom" class="border rounded-lg px-3 py-2 text-sm" />
-                <input type="date" id="filterTo" class="border rounded-lg px-3 py-2 text-sm" />
+                <div class="flex flex-col">
+                  <label for="billingMonthFrom" class="text-[11px] text-gray-500 mb-1">請求対象年月（From）</label>
+                  <input type="month" id="billingMonthFrom" class="border rounded-lg px-3 py-2 text-sm" />
+                </div>
+                <div class="flex flex-col">
+                  <label for="billingMonthTo" class="text-[11px] text-gray-500 mb-1">請求対象年月（To）</label>
+                  <input type="month" id="billingMonthTo" class="border rounded-lg px-3 py-2 text-sm" />
+                </div>
                 <select id="filterState" class="border rounded-lg px-3 py-2 text-sm">
                   <option value="">全ステータス</option>
                   <option value="unconfirmed">未確認</option>
@@ -11104,9 +11182,14 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
                   <option value="rejected">差し戻し</option>
                 </select>
                 <input type="text" id="filterSearch" placeholder="請求書番号/IDで検索" class="border rounded-lg px-3 py-2 text-sm" />
-                <button id="applyFiltersBtn" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700">
-                  <i class="fas fa-filter mr-1"></i>絞り込み
-                </button>
+                <div class="flex items-end gap-2">
+                  <button id="applyFiltersBtn" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700">
+                    <i class="fas fa-filter mr-1"></i>絞り込み
+                  </button>
+                  <button id="clearFiltersBtn" class="bg-gray-100 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-200">
+                    条件クリア
+                  </button>
+                </div>
               </div>
 
               <div class="overflow-x-auto border rounded-lg">
@@ -11140,10 +11223,12 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
                       </button>
                     </div>
                   </div>
-                  <div id="portalInvoiceMeta" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"></div>
+                  <p id="portalPdfError" class="hidden mb-3 text-sm text-red-600"></p>
+                  <div id="portalInvoiceMeta" class="w-full text-sm"></div>
                   <div class="mt-4">
                     <h4 class="font-semibold text-gray-700 mb-2">納品スナップショット</h4>
-                    <div id="snapshotList" class="space-y-2"></div>
+                    <div id="snapshotList" class="space-y-3"></div>
+                    <div id="snapshotInvoiceTotals" class="mt-4"></div>
                   </div>
                   <div class="mt-4">
                     <h4 class="font-semibold text-gray-700 mb-2">履歴</h4>
@@ -11155,6 +11240,9 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
 
             <div id="companyView" class="hidden">
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm" id="companyProfileFields"></div>
+              <p class="mt-3 text-xs text-gray-500">
+                この情報は送信元が登録した内容です。修正が必要な場合は修正依頼を作成してください。
+              </p>
               <div class="mt-4 flex items-center justify-between">
                 <h3 class="text-base font-semibold">修正依頼履歴</h3>
                 <button id="openChangeRequestModalBtn" class="px-3 py-2 bg-amber-500 text-white rounded-lg text-sm hover:bg-amber-600">
@@ -11228,6 +11316,34 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
       </div>
     </div>
 
+    <div id="rejectReasonModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+      <div class="bg-white rounded-xl shadow-xl w-full max-w-lg p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg font-bold text-gray-800">差し戻し理由</h3>
+          <button id="closeRejectReasonModalBtn" class="text-gray-500 hover:text-gray-700"><i class="fas fa-times"></i></button>
+        </div>
+        <p class="text-sm text-gray-600 mb-3">差し戻し理由を入力してください（必須）</p>
+        <label class="block text-xs text-gray-600 mb-1">差し戻し理由（必須）</label>
+        <select id="rejectReasonCode" class="w-full border rounded-lg px-3 py-2 text-sm">
+          <option value="">選択してください</option>
+          <option value="AMOUNT_MISMATCH">金額が一致しない</option>
+          <option value="ITEM_ERROR">明細内容の不備（品名・数量など）</option>
+          <option value="BILLING_MONTH_WRONG">請求対象月（年月）が違う</option>
+          <option value="CLIENT_INFO_ERROR">取引先情報の不備（住所・担当など）</option>
+          <option value="MISSING_DOCS">添付/関連書類が不足（納品書など）</option>
+          <option value="DUPLICATE">二重請求の可能性</option>
+          <option value="OTHER">その他（詳細必須）</option>
+        </select>
+        <label class="block text-xs text-gray-600 mt-3 mb-1">詳細（任意）</label>
+        <textarea id="rejectReasonInput" rows={3} maxlength={500} class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="必要に応じて詳細を入力してください"></textarea>
+        <p id="rejectReasonError" class="hidden mt-2 text-sm text-red-600">必須です</p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button id="cancelRejectReasonBtn" class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">キャンセル</button>
+          <button id="submitRejectReasonBtn" class="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:bg-red-300 disabled:cursor-not-allowed" disabled>差し戻し実行</button>
+        </div>
+      </div>
+    </div>
+
     <script dangerouslySetInnerHTML={{ __html: `
       (function(){
         var initialPortalInvoiceId = ${JSON.stringify(initialPortalInvoiceId)};
@@ -11252,20 +11368,110 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
           return 'bg-yellow-100 text-yellow-700';
         }
 
+        function eventActionLabel(type) {
+          if (type === 'sent') return '受領';
+          if (type === 'viewed') return '閲覧';
+          if (type === 'approved') return '承認';
+          if (type === 'rejected' || type === 'returned') return '差し戻し';
+          return '';
+        }
+
+        function rejectReasonCodeLabel(code) {
+          if (code === 'AMOUNT_MISMATCH') return '金額が一致しない';
+          if (code === 'ITEM_ERROR') return '明細内容の不備（品名・数量など）';
+          if (code === 'BILLING_MONTH_WRONG') return '請求対象月（年月）が違う';
+          if (code === 'CLIENT_INFO_ERROR') return '取引先情報の不備（住所・担当など）';
+          if (code === 'MISSING_DOCS') return '添付/関連書類が不足（納品書など）';
+          if (code === 'DUPLICATE') return '二重請求の可能性';
+          if (code === 'OTHER') return 'その他';
+          return '';
+        }
+
         function formatDate(v) {
           if (!v) return '-';
           try { return new Date(v).toLocaleString('ja-JP'); } catch { return v; }
         }
 
+        function formatMoney(value) {
+          return '¥' + Number(value || 0).toLocaleString('ja-JP');
+        }
+
+        function sanitizeFileNamePart(value) {
+          return String(value || '')
+            .replace(/[\\\\/:*?"<>|]/g, '_')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        }
+
+        function toYYYYMM(value) {
+          var raw = String(value || '');
+          var m = raw.match(/^(\\d{4})-(\\d{2})/);
+          return m ? (m[1] + m[2]) : '';
+        }
+
+        function getCurrentCompanyDisplayData() {
+          var inv = state.selectedInvoice || {};
+          var client = inv.recipient_client || null;
+          if (client) {
+            var postal = client.postal_code || client.zip_code || client.post_code || '-';
+            var structuredAddressParts = [
+              client.prefecture,
+              client.city,
+              client.address_1 || client.address1 || client.address_line1,
+              client.address_2 || client.address2 || client.address_line2
+            ].filter(function(v){ return v !== undefined && v !== null && String(v).trim() !== ''; });
+            var street = client.address_number && String(client.address_number).trim()
+              ? String(client.address_number).trim()
+              : '';
+            var freeAddress = client.address && String(client.address).trim()
+              ? String(client.address).trim()
+              : (client.full_address && String(client.full_address).trim() ? String(client.full_address).trim() : '');
+            var baseAddress = structuredAddressParts.length ? structuredAddressParts.join('') : freeAddress;
+            var address = (baseAddress || '') + (street || '');
+            var building = client.building_name && String(client.building_name).trim()
+              ? String(client.building_name).trim()
+              : '-';
+            return {
+              display_name: client.client_name || client.company_name || client.display_name || '-',
+              postal_code: postal || '-',
+              address: address || '-',
+              building: building,
+              phone: client.tel || client.phone || client.phone_number || '-',
+              fax: client.fax || client.fax_number || '-',
+              email: client.portal_email || client.email || '-',
+              department_name: client.department_name || client.department || '-',
+              person_name: client.person_name || client.representative_name || client.contact_name || '-'
+            };
+          }
+          var profile = state.profileDetail || null;
+          if (!profile) return null;
+          return {
+            display_name: profile.display_name || profile.company_name || '-',
+            postal_code: profile.postal_code || profile.zip_code || '-',
+            address: profile.address || profile.full_address || '-',
+            building: profile.building || profile.building_name || '-',
+            phone: profile.phone || profile.tel || '-',
+            fax: profile.fax || '-',
+            email: profile.portal_email || profile.email || '-',
+            department_name: profile.department_name || profile.department || '-',
+            person_name: profile.person_name || profile.representative_name || '-'
+          };
+        }
+
         function qs(id){ return document.getElementById(id); }
 
+        function getPortalSidebarStorageKey() {
+          return 'portal_sidebar_collapsed';
+        }
+
+        function setPortalSidebarCollapsed(collapsed) {
+          var sidebar = document.getElementById('sidebar');
+          if (!sidebar) return;
+          sidebar.classList.toggle('collapsed', !!collapsed);
+          localStorage.setItem(getPortalSidebarStorageKey(), collapsed ? '1' : '0');
+        }
+
         function renderProfileSelector() {
-          var select = qs('profileSelect');
-          if (!select) return;
-          select.innerHTML = state.profiles.map(function(p){
-            return '<option value="' + p.id + '">' + (p.display_name || '名称未設定') + '</option>';
-          }).join('');
-          if (state.selectedProfileId) select.value = state.selectedProfileId;
           var current = state.profiles.find(function(p){ return p.id === state.selectedProfileId; });
           qs('currentCompanyName').textContent = current ? current.display_name : '会社を選択してください';
         }
@@ -11280,9 +11486,10 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
           tbody.innerHTML = state.invoices.map(function(inv){
             var unread = inv.is_read ? '<span class="text-xs text-gray-500">既読</span>' : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700">未読</span>';
             var invoiceNo = inv.invoice_no || ('INV-' + String(inv.invoice_id || ''));
+            var sender = inv.sender_company_name || '-';
             return '<tr class="hover:bg-gray-50 cursor-pointer portal-invoice-row" data-id="' + inv.id + '">' +
               '<td class="px-3 py-2">' + unread + '</td>' +
-              '<td class="px-3 py-2 font-medium text-indigo-700">' + invoiceNo + '</td>' +
+              '<td class="px-3 py-2 font-medium text-indigo-700"><div>' + invoiceNo + '</div><div class="text-[11px] text-gray-500 font-normal mt-0.5">送信元: ' + sender + '</div></td>' +
               '<td class="px-3 py-2">' + (inv.invoice_date || '-') + '</td>' +
               '<td class="px-3 py-2 text-right">¥' + Number(inv.total_amount || 0).toLocaleString() + '</td>' +
               '<td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(inv.state) + '">' + statusLabel(inv.state) + '</span></td>' +
@@ -11299,28 +11506,70 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
           }
           root.classList.remove('hidden');
           var inv = state.selectedInvoice;
+          var pdfErr = qs('portalPdfError');
+          if (pdfErr) {
+            pdfErr.textContent = '';
+            pdfErr.classList.add('hidden');
+          }
           qs('portalInvoiceMeta').innerHTML = '' +
-            '<div><p class="text-gray-500">ポータル請求書ID</p><p class="font-semibold">' + inv.id + '</p></div>' +
-            '<div><p class="text-gray-500">請求書番号</p><p class="font-semibold">' + ((inv.base_invoice && inv.base_invoice.invoice_no) || '-') + '</p></div>' +
-            '<div><p class="text-gray-500">発行日</p><p class="font-semibold">' + ((inv.base_invoice && inv.base_invoice.invoice_date) || '-') + '</p></div>' +
-            '<div><p class="text-gray-500">状態</p><p class="font-semibold"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(inv.state) + '">' + statusLabel(inv.state) + '</span></p></div>';
+            '<div class="grid grid-cols-1 md:grid-cols-3 gap-2 w-full">' +
+              '<div class="rounded border bg-white px-3 py-2"><p class="text-gray-500 text-xs text-left">請求書番号</p><p class="font-semibold text-right tabular-nums">' + ((inv.base_invoice && inv.base_invoice.invoice_no) || '-') + '</p></div>' +
+              '<div class="rounded border bg-white px-3 py-2"><p class="text-gray-500 text-xs text-left">発行日</p><p class="font-semibold text-right tabular-nums">' + ((inv.base_invoice && inv.base_invoice.invoice_date) || '-') + '</p></div>' +
+              '<div class="rounded border bg-white px-3 py-2"><p class="text-gray-500 text-xs text-left">状態</p><p class="font-semibold text-right"><span class="px-2 py-0.5 rounded-full text-xs ' + statusClass(inv.state) + '">' + statusLabel(inv.state) + '</span></p></div>' +
+            '</div>' +
+            '<div class="mt-2"><details class="rounded border bg-white px-3 py-2"><summary class="cursor-pointer text-xs text-gray-500">高度な情報</summary><div class="mt-2 flex items-center justify-between gap-2"><span class="text-xs text-gray-500">ポータル請求書ID: <span class="font-mono text-gray-700">' + inv.id + '</span></span><button id="copyPortalInvoiceIdBtn" class="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">コピー</button></div></details></div>';
 
           var snapshots = inv.snapshot_rows || [];
           qs('snapshotList').innerHTML = snapshots.length ? snapshots.map(function(row){
             var delivery = (row.snapshot && row.snapshot.delivery) || {};
             var items = (row.snapshot && row.snapshot.items) || [];
-            return '<div class="border rounded-lg p-3 bg-white">' +
-              '<p class="text-sm font-semibold text-gray-800">納品ID: ' + (row.delivery_id || '-') + ' / 納品日: ' + (delivery.delivery_date || '-') + '</p>' +
-              '<p class="text-xs text-gray-500 mt-1">明細件数: ' + items.length + '</p>' +
+            var subtotal = Number(delivery.subtotal || 0);
+            var taxAmount = Number(delivery.tax_amount || 0);
+            var totalAmount = Number(delivery.total_amount || (subtotal + taxAmount));
+            return '<div class="border rounded-lg p-4 bg-white">' +
+              '<div class="flex flex-wrap items-center justify-between gap-2">' +
+                '<p class="text-sm font-semibold text-gray-800">納品書番号: ' + (delivery.delivery_no || ('#' + (row.delivery_id || '-'))) + '</p>' +
+                '<p class="text-xs text-gray-500">日付: ' + (delivery.delivery_date || '-') + '</p>' +
+              '</div>' +
+              '<div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 w-full text-xs">' +
+                '<div class="rounded bg-gray-50 px-3 py-2"><div class="text-[11px] text-gray-500 text-left">小計</div><div class="text-lg font-medium text-gray-800 text-right tabular-nums mt-1">' + formatMoney(subtotal) + '</div></div>' +
+                '<div class="rounded bg-gray-50 px-3 py-2"><div class="text-[11px] text-gray-500 text-left">税</div><div class="text-lg font-medium text-gray-800 text-right tabular-nums mt-1">' + formatMoney(taxAmount) + '</div></div>' +
+                '<div class="rounded bg-gray-50 px-3 py-2"><div class="text-[11px] text-gray-500 text-left">合計</div><div class="text-lg font-semibold text-gray-900 text-right tabular-nums mt-1">' + formatMoney(totalAmount) + '</div></div>' +
+                '<div class="rounded bg-gray-50 px-3 py-2"><div class="text-[11px] text-gray-500 text-left">明細件数</div><div class="text-base font-medium text-gray-800 text-right tabular-nums mt-1">' + items.length + '件</div></div>' +
+              '</div>' +
             '</div>';
           }).join('') : '<p class="text-sm text-gray-500">スナップショットがありません</p>';
+          var base = inv.base_invoice || {};
+          qs('snapshotInvoiceTotals').innerHTML =
+            '<div class="rounded-lg border bg-indigo-50 p-4">' +
+              '<p class="text-sm font-semibold text-indigo-900 mb-2">請求書合計（合算）</p>' +
+              '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">' +
+                '<div class="rounded bg-white px-3 py-2"><div class="text-gray-500 text-left">小計</div><p class="text-lg font-medium text-gray-900 text-right tabular-nums mt-1">' + formatMoney(base.subtotal || 0) + '</p></div>' +
+                '<div class="rounded bg-white px-3 py-2"><div class="text-gray-500 text-left">税</div><p class="text-lg font-medium text-gray-900 text-right tabular-nums mt-1">' + formatMoney(base.tax_amount || 0) + '</p></div>' +
+                '<div class="rounded bg-white px-3 py-2"><div class="text-gray-500 text-left">合計</div><p class="text-lg font-semibold text-gray-900 text-right tabular-nums mt-1">' + formatMoney(base.total_amount || 0) + '</p></div>' +
+              '</div>' +
+            '</div>';
 
-          var events = inv.events || [];
+          var events = (inv.events || []).filter(function(ev){
+            return !!eventActionLabel(ev.type);
+          });
           qs('eventTimeline').innerHTML = events.length ? events.map(function(ev){
-            var payload = ev.payload ? JSON.stringify(ev.payload) : '';
+            var reason = '';
+            if ((ev.type === 'rejected' || ev.type === 'returned') && ev.payload && typeof ev.payload === 'object') {
+              var payloadReasonText = ev.payload.reason_text || ev.payload.reason || '';
+              var payloadReasonCode = ev.payload.reason_code || '';
+              if (payloadReasonText) {
+                reason = String(payloadReasonText);
+              } else if (payloadReasonCode) {
+                reason = rejectReasonCodeLabel(String(payloadReasonCode));
+              }
+            } else if ((ev.type === 'rejected' || ev.type === 'returned') && inv.rejected_reason) {
+              reason = String(inv.rejected_reason);
+            }
             return '<li class="border-l-2 border-blue-200 pl-3 py-1">' +
-              '<p class="font-medium text-gray-800">' + ev.type + '</p>' +
-              '<p class="text-xs text-gray-500">' + formatDate(ev.created_at) + (payload ? ' / ' + payload : '') + '</p>' +
+              '<p class="font-medium text-gray-800">' + eventActionLabel(ev.type) + '</p>' +
+              '<p class="text-xs text-gray-500">' + formatDate(ev.created_at) + '</p>' +
+              (reason ? '<p class="text-xs text-red-600 mt-1">理由: ' + reason + '</p>' : '') +
             '</li>';
           }).join('') : '<li class="text-gray-500">履歴はまだありません</li>';
         }
@@ -11328,7 +11577,7 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
         function renderCompanyProfile() {
           var fields = qs('companyProfileFields');
           if (!fields) return;
-          var p = state.profileDetail;
+          var p = getCurrentCompanyDisplayData();
           if (!p) {
             fields.innerHTML = '<p class="text-sm text-gray-500">会社プロフィールが未設定です</p>';
             return;
@@ -11337,9 +11586,11 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             ['会社名', p.display_name || '-'],
             ['郵便番号', p.postal_code || '-'],
             ['住所', p.address || '-'],
+            ['ビル名等', p.building || '-'],
             ['電話', p.phone || '-'],
             ['FAX', p.fax || '-'],
-            ['メール', p.email || '-']
+            ['メール', p.email || '-'],
+            ['部署', p.department_name || '-']
           ].map(function(row){
             return '<div class="border rounded-lg p-3 bg-gray-50"><p class="text-gray-500">' + row[0] + '</p><p class="font-semibold text-gray-800 break-all">' + row[1] + '</p></div>';
           }).join('');
@@ -11380,20 +11631,34 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             return;
           }
           var params = { profile_id: state.selectedProfileId };
-          if (qs('filterFrom').value) params.from = qs('filterFrom').value;
-          if (qs('filterTo').value) params.to = qs('filterTo').value;
-          if (qs('filterState').value) params.state = qs('filterState').value;
-          if (qs('filterSearch').value) params.search = qs('filterSearch').value;
+          if (qs('billingMonthFrom').value) params.billing_month_from = qs('billingMonthFrom').value;
+          if (qs('billingMonthTo').value) params.billing_month_to = qs('billingMonthTo').value;
+          if (qs('filterState').value) params.status = qs('filterState').value;
+          if (qs('filterSearch').value) params.q = qs('filterSearch').value;
           var res = await axios.get('/api/portal/invoices', { params: params });
           state.invoices = (res.data && res.data.invoices) || [];
           renderInvoiceList();
         }
 
         async function loadInvoiceDetail(portalInvoiceId) {
-          var res = await axios.get('/api/portal/invoices/' + encodeURIComponent(portalInvoiceId));
-          state.selectedInvoice = res.data && res.data.invoice ? res.data.invoice : null;
-          renderInvoiceDetail();
-          await loadInvoices();
+          try {
+            var res = await axios.get('/api/portal/invoices/' + encodeURIComponent(portalInvoiceId));
+            state.selectedInvoice = res.data && res.data.invoice ? res.data.invoice : null;
+            renderInvoiceDetail();
+            renderCompanyProfile();
+            await loadInvoices();
+          } catch (e) {
+            var status = e && e.response && e.response.status;
+            if (status === 404) {
+              state.selectedInvoice = null;
+              renderInvoiceDetail();
+              renderCompanyProfile();
+              await loadInvoices();
+              alert('選択した請求書は削除済みです。');
+              return;
+            }
+            throw e;
+          }
         }
 
         async function loadCompanyProfile() {
@@ -11405,6 +11670,7 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             return;
           }
           var res = await axios.get('/api/portal/company-profile/' + encodeURIComponent(state.selectedProfileId));
+          console.log('[portal] company-profile loaded', state.selectedProfileId, res.data);
           state.profileDetail = res.data && res.data.profile ? res.data.profile : null;
           state.changeRequests = res.data && res.data.change_requests ? res.data.change_requests : [];
           renderCompanyProfile();
@@ -11419,14 +11685,80 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
 
         async function rejectCurrent() {
           if (!state.selectedInvoice) return;
-          var reason = window.prompt('差し戻し理由を入力してください');
-          if (!reason || !reason.trim()) return;
-          await axios.post('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/reject', { reason: reason.trim() });
+          openRejectReasonModal();
+        }
+
+        function refreshRejectReasonFormState() {
+          var codeEl = qs('rejectReasonCode');
+          var input = qs('rejectReasonInput');
+          var submitBtn = qs('submitRejectReasonBtn');
+          var err = qs('rejectReasonError');
+          if (!codeEl || !input || !submitBtn) return;
+          var code = String(codeEl.value || '').trim();
+          var value = String(input.value || '').trim();
+          var valid = !!code && (code !== 'OTHER' || !!value);
+          submitBtn.disabled = !valid;
+          if (err && valid) err.classList.add('hidden');
+        }
+
+        function openRejectReasonModal() {
+          var modal = qs('rejectReasonModal');
+          var codeEl = qs('rejectReasonCode');
+          var input = qs('rejectReasonInput');
+          var err = qs('rejectReasonError');
+          if (!modal || !codeEl || !input) return;
+          codeEl.value = '';
+          input.value = '';
+          if (err) err.classList.add('hidden');
+          refreshRejectReasonFormState();
+          modal.classList.remove('hidden');
+          modal.classList.add('flex');
+          setTimeout(function() { input.focus(); }, 0);
+        }
+
+        function closeRejectReasonModal() {
+          var modal = qs('rejectReasonModal');
+          var codeEl = qs('rejectReasonCode');
+          var input = qs('rejectReasonInput');
+          var err = qs('rejectReasonError');
+          if (!modal || !codeEl || !input) return;
+          codeEl.value = '';
+          input.value = '';
+          if (err) err.classList.add('hidden');
+          refreshRejectReasonFormState();
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+        }
+
+        async function submitRejectReason() {
+          if (!state.selectedInvoice) return;
+          var codeEl = qs('rejectReasonCode');
+          var input = qs('rejectReasonInput');
+          var err = qs('rejectReasonError');
+          var submitBtn = qs('submitRejectReasonBtn');
+          if (!codeEl || !input || !submitBtn) return;
+          var reasonCode = String(codeEl.value || '').trim();
+          var reasonText = String(input.value || '').trim();
+          if (!reasonCode || (reasonCode === 'OTHER' && !reasonText)) {
+            if (err) err.classList.remove('hidden');
+            refreshRejectReasonFormState();
+            return;
+          }
+          submitBtn.disabled = true;
+          try {
+            await axios.post('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/reject', {
+              reason_code: reasonCode,
+              reason_text: reasonText,
+            });
+            closeRejectReasonModal();
+          } finally {
+            submitBtn.disabled = false;
+          }
           await loadInvoiceDetail(state.selectedInvoice.id);
         }
 
         function openChangeRequestModal() {
-          var p = state.profileDetail || {};
+          var p = getCurrentCompanyDisplayData() || {};
           qs('reqDisplayName').value = p.display_name || '';
           qs('reqPostalCode').value = p.postal_code || '';
           qs('reqAddress').value = p.address || '';
@@ -11474,12 +11806,14 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
 
         async function init() {
           try {
+            var sidebarSaved = localStorage.getItem(getPortalSidebarStorageKey());
+            setPortalSidebarCollapsed(sidebarSaved === null ? true : sidebarSaved === '1');
             await loadProfiles();
             if (state.selectedProfileId) {
               localStorage.setItem('portal_profile_id', state.selectedProfileId);
             }
-            await loadInvoices();
             await loadCompanyProfile();
+            await loadInvoices();
             if (initialPortalInvoiceId) {
               await loadInvoiceDetail(initialPortalInvoiceId);
             }
@@ -11500,6 +11834,14 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             await loadInvoices();
             return;
           }
+          if (target && target.closest && target.closest('#clearFiltersBtn')) {
+            qs('billingMonthFrom').value = '';
+            qs('billingMonthTo').value = '';
+            qs('filterState').value = '';
+            qs('filterSearch').value = '';
+            await loadInvoices();
+            return;
+          }
           if (target && target.closest && target.closest('#approveBtn')) {
             await approveCurrent();
             return;
@@ -11508,8 +11850,93 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             await rejectCurrent();
             return;
           }
+          if (target && target.closest && target.closest('#closeRejectReasonModalBtn')) {
+            closeRejectReasonModal();
+            return;
+          }
+          if (target && target.closest && target.closest('#cancelRejectReasonBtn')) {
+            closeRejectReasonModal();
+            return;
+          }
+          if (target && target.id === 'rejectReasonModal') {
+            closeRejectReasonModal();
+            return;
+          }
+          if (target && target.closest && target.closest('#submitRejectReasonBtn')) {
+            await submitRejectReason();
+            return;
+          }
           if (target && target.closest && target.closest('#downloadPdfBtn') && state.selectedInvoice) {
-            window.open('/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/pdf', '_blank');
+            try {
+              const url = '/api/portal/invoices/' + encodeURIComponent(state.selectedInvoice.id) + '/pdf';
+              var pdfErrEl = qs('portalPdfError');
+              if (pdfErrEl) {
+                pdfErrEl.textContent = '';
+                pdfErrEl.classList.add('hidden');
+              }
+              console.log('[PDF] request url=', url);
+
+              const res = await fetch(url, { method: 'GET' });
+              console.log('[PDF] status=', res.status);
+              console.log('[PDF] content-type=', res.headers.get('content-type'));
+              console.log('[PDF] content-disposition=', res.headers.get('content-disposition'));
+
+              if (!res.ok) {
+                var message = 'PDFの取得に失敗しました';
+                try {
+                  var errJson = await res.json();
+                  if (errJson && (errJson.message || errJson.error)) {
+                    message = errJson.message || errJson.error;
+                  }
+                } catch (_) {
+                  const text = await res.text();
+                  if (text) message = text.slice(0, 200);
+                }
+                console.error('[PDF] download failed:', res.status, message);
+                if (pdfErrEl) {
+                  pdfErrEl.textContent = message;
+                  pdfErrEl.classList.remove('hidden');
+                } else {
+                  alert(message);
+                }
+                return;
+              }
+
+              const blob = await res.blob();
+              if (!blob || blob.size <= 0) {
+                throw new Error('PDF_EMPTY');
+              }
+              const blobUrl = URL.createObjectURL(blob);
+
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              const inv = state.selectedInvoice || {};
+              const baseInv = inv.base_invoice || {};
+              const billingStart = baseInv.billing_period_start ? String(baseInv.billing_period_start) : '';
+              const invoiceDate =
+                (baseInv && baseInv.invoice_date)
+                ? String(baseInv.invoice_date)
+                : '';
+              const yyyymm = toYYYYMM(billingStart) || toYYYYMM(invoiceDate) || toYYYYMM(new Date().toISOString());
+              const senderName = sanitizeFileNamePart(inv.sender_company_name || '送信元不明');
+              var fileName = yyyymm + '_' + senderName + '.pdf';
+              a.download = fileName;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+
+              URL.revokeObjectURL(blobUrl);
+            } catch (e) {
+              console.error('[PDF] exception:', e);
+              var failMsg = 'PDFのダウンロードに失敗しました';
+              var errEl = qs('portalPdfError');
+              if (errEl) {
+                errEl.textContent = failMsg;
+                errEl.classList.remove('hidden');
+              } else {
+                alert(failMsg);
+              }
+            }
             return;
           }
           if (target && target.closest && target.closest('#openChangeRequestModalBtn')) {
@@ -11524,6 +11951,15 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
             await submitChangeRequest();
             return;
           }
+          if (target && target.closest && target.closest('#copyPortalInvoiceIdBtn') && state.selectedInvoice) {
+            try {
+              await navigator.clipboard.writeText(String(state.selectedInvoice.id || ''));
+              alert('ポータル請求書IDをコピーしました');
+            } catch (_) {
+              alert('コピーに失敗しました');
+            }
+            return;
+          }
           if (target && target.closest && target.closest('#tabInvoices')) {
             setTab('invoices');
             return;
@@ -11534,17 +11970,23 @@ const renderPortalPage = (initialPortalInvoiceId: string = '') => (
           }
         });
 
-        qs('profileSelect').addEventListener('change', async function(){
-          state.selectedProfileId = this.value;
-          localStorage.setItem('portal_profile_id', state.selectedProfileId);
-          state.selectedInvoice = null;
-          renderProfileSelector();
-          renderInvoiceDetail();
-          await loadInvoices();
-          await loadCompanyProfile();
-        });
-
         setTab('invoices');
+        var sidebarToggleBtn = document.getElementById('sidebarToggle');
+        if (sidebarToggleBtn) {
+          sidebarToggleBtn.addEventListener('click', function() {
+            var sidebar = document.getElementById('sidebar');
+            if (!sidebar) return;
+            localStorage.setItem(getPortalSidebarStorageKey(), sidebar.classList.contains('collapsed') ? '1' : '0');
+          });
+        }
+        var rejectReasonInputEl = qs('rejectReasonInput');
+        var rejectReasonCodeEl = qs('rejectReasonCode');
+        if (rejectReasonInputEl) {
+          rejectReasonInputEl.addEventListener('input', refreshRejectReasonFormState);
+        }
+        if (rejectReasonCodeEl) {
+          rejectReasonCodeEl.addEventListener('change', refreshRejectReasonFormState);
+        }
         init();
       })();
     `}} />

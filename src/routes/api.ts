@@ -5,7 +5,9 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env.local') })
 dotenv.config({ path: path.resolve(process.cwd(), '.env') })
 
 import { Hono } from 'hono'
+import { createHash } from 'node:crypto'
 import { supabase } from '../lib/supabaseClient'
+import { supabaseAdmin } from '../lib/supabaseAdmin'
 import { demoFabricDict } from '../features/fabric-calculator/data/demoFabricDict'
 import { calculateFabricUsage } from '../features/fabric-calculator/utils/calculation'
 import type {
@@ -146,22 +148,50 @@ api.onError((err, c) => {
 
 // SaaS用: 開発中は仮のユーザーIDを使用
 const DEMO_USER_ID = 'demo-user-001'
+const INVOICE_PDF_BUCKET = 'invoice-pdfs'
+
+const toSafePdfFileNameBase = (value: unknown): string => {
+  const raw = String(value || '').trim()
+  if (!raw) return 'invoice'
+  return raw.replace(/[\\/:*?"<>|]/g, '_')
+}
+
+const toContentDispositionFileName = (value: unknown): string => {
+  return `${toSafePdfFileNameBase(value)}.pdf`
+}
+
+function toAsciiFallbackFilename(input: unknown): string {
+  const base = String(input || '')
+    .replace(/[^0-9A-Za-z._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return base ? base : 'file.pdf'
+}
+
+function encodeRFC5987ValueChars(str: string): string {
+  return encodeURIComponent(str)
+    .replace(/['()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/\*/g, '%2A')
+}
+
+function buildContentDispositionAttachment(filenameUtf8: string): string {
+  const ascii = toAsciiFallbackFilename(filenameUtf8)
+  const encoded = encodeRFC5987ValueChars(filenameUtf8)
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`
+}
+
+const toPdfStoragePath = (userId: string, invoiceId: number, invoiceNo: unknown): string => {
+  const safeInvoiceNo = toSafePdfFileNameBase(invoiceNo || `invoice-${invoiceId}`)
+  return `${userId}/${invoiceId}/${safeInvoiceNo}.pdf`
+}
+
+const toSha256Hex = (bytes: Buffer): string => {
+  return createHash('sha256').update(bytes).digest('hex')
+}
 
 function getResolvedUserId(_c?: any): string {
   // TODO: Supabase Auth 導入後はここだけ差し替える
   return DEMO_USER_ID
-}
-
-function getPortalDateRange(c: any): { from: string | null; to: string | null; error: string | null } {
-  const from = (c.req.query('from') || '').trim()
-  const to = (c.req.query('to') || '').trim()
-  if (from && !isValidDateString(from)) {
-    return { from: null, to: null, error: 'INVALID_FROM_DATE' }
-  }
-  if (to && !isValidDateString(to)) {
-    return { from: null, to: null, error: 'INVALID_TO_DATE' }
-  }
-  return { from: from || null, to: to || null, error: null }
 }
 
 function buildSimplePdfBuffer(lines: string[]): ArrayBuffer {
@@ -3434,7 +3464,11 @@ api.post('/invoices', async (c) => {
   const rawInvoiceNo = typeof data.invoice_no === 'string' ? data.invoice_no.trim() : ''
   let invoiceNo = rawInvoiceNo
   if (!invoiceNo) {
-    const docDate = data.invoice_date || new Date().toISOString().split('T')[0]
+    const billingTargetMonth =
+      toYYYYMM(data.period_to) ||
+      toYYYYMM(data.billing_period_to) ||
+      toYYYYMM(data.billing_period_end)
+    const docDate = billingTargetMonth ? `${billingTargetMonth}-01` : (data.invoice_date || new Date().toISOString().split('T')[0])
     const { data: nextNo, error: nextNoError } = await supabase.rpc('next_document_no', {
       doc_type: 'invoice',
       doc_date: docDate
@@ -3665,6 +3699,7 @@ api.post('/invoices/:id/send', async (c) => {
   const addToPortal = body.add_to_portal !== false
   const notifyEmail = body.notify_email !== false
   const overrideEmail = body.override_email && String(body.override_email).trim() ? String(body.override_email).trim() : null
+  const pdfBase64Raw = typeof body.pdf_base64 === 'string' ? String(body.pdf_base64).trim() : ''
 
   if (!addToPortal && !notifyEmail) {
     return c.json({ success: false, error: 'NO_ACTION', message: '受取ページに追加またはメール通知のいずれかを選択してください' }, 400)
@@ -3675,7 +3710,7 @@ api.post('/invoices/:id/send', async (c) => {
   // 請求書取得
   const { data: invoice, error: invoiceError } = await supabase
     .from('invoices')
-    .select('id, client_id, status, user_id, invoice_no, billing_period_start, billing_period_end, email_notify_attempts')
+    .select('id, client_id, status, user_id, invoice_no, billing_period_start, billing_period_end, email_notify_attempts, subtotal, tax_amount, total_amount, pdf_path')
     .eq('id', idNum)
     .eq('user_id', userId)
     .maybeSingle()
@@ -3688,7 +3723,7 @@ api.post('/invoices/:id/send', async (c) => {
     return c.json({ success: false, error: 'CLIENT_REQUIRED', message: '得意先未設定' }, 400)
   }
 
-  // 送付先メール決定: override_email > portal_email > email
+  // 送付先メール決定: override_email > portal_email(帳票受取先) > email
   const { data: client, error: clientError } = await supabase
     .from('clients')
     .select('portal_email, email, client_name')
@@ -3715,6 +3750,97 @@ api.post('/invoices/:id/send', async (c) => {
   let emailErrorMessage: string | null = null
   let invoiceResponse: any = { id: invoice.id, status: invoice.status, sent_at: null, sent_to_email: null }
   const warnings: string[] = []
+  let pdfStoreFailed = false
+
+  // 発行側が渡した正式PDFがあれば先に保存してメタデータを記録する
+  if (pdfBase64Raw) {
+    try {
+      const normalizedBase64 = pdfBase64Raw.replace(/^data:application\/pdf;base64,/i, '')
+      const pdfBytes = Buffer.from(normalizedBase64, 'base64')
+      if (pdfBytes.length > 0) {
+        const storagePath = toPdfStoragePath(userId, idNum, invoice.invoice_no)
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from(INVOICE_PDF_BUCKET)
+          .upload(storagePath, pdfBytes, {
+            contentType: 'application/pdf',
+            upsert: true,
+          })
+        if (uploadError) {
+          pdfStoreFailed = true
+          warnings.push('PDF_STORE_FAILED')
+          console.error(
+            `[API] invoice pdf upload failed invoice_id=${idNum} path=${storagePath} size=${pdfBytes.length}`,
+            uploadError
+          )
+        } else {
+          const now = new Date().toISOString()
+          const sha256 = toSha256Hex(pdfBytes)
+          const { error: pdfMetaError } = await supabase
+            .from('invoices')
+            .update({
+              pdf_path: storagePath,
+              pdf_size: pdfBytes.length,
+              pdf_sha256: sha256,
+              pdf_generated_at: now,
+              updated_at: now,
+            })
+            .eq('id', idNum)
+            .eq('user_id', userId)
+          if (pdfMetaError) {
+            pdfStoreFailed = true
+            warnings.push('PDF_META_UPDATE_FAILED')
+            console.error(`[API] invoice pdf meta update failed invoice_id=${idNum} path=${storagePath}`, pdfMetaError)
+          } else {
+            console.log(`[API] invoice pdf stored invoice_id=${idNum} path=${storagePath} size=${pdfBytes.length}`)
+          }
+        }
+      } else {
+        pdfStoreFailed = true
+        warnings.push('PDF_BYTES_EMPTY')
+        console.warn(`[API] invoice pdf upload skipped invoice_id=${idNum} reason=empty_bytes`)
+      }
+    } catch (pdfError) {
+      pdfStoreFailed = true
+      warnings.push('PDF_STORE_EXCEPTION')
+      console.error(`[API] invoice pdf upload exception invoice_id=${idNum}`, pdfError)
+    }
+  }
+
+  if (pdfBase64Raw && pdfStoreFailed) {
+    const status = 500
+    const message = '正式PDFの保存に失敗したため送付を中断しました'
+    console.error(
+      `[API] send blocked invoice_id=${idNum} status=${status} message=${message} pdf_path=${invoice.pdf_path || '(null)'}`
+    )
+    return c.json({ success: false, error: 'PDF_STORE_FAILED', message }, status)
+  }
+
+  // 送付前提: 正式PDFが保存されていることを必須化
+  const { data: pdfMetaRow, error: pdfMetaError } = await supabase
+    .from('invoices')
+    .select('pdf_path, pdf_size')
+    .eq('id', idNum)
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (pdfMetaError) return handleSupabaseError(c, pdfMetaError, 'invoices select pdf meta for send')
+  const storedPdfPath = pdfMetaRow?.pdf_path && String(pdfMetaRow.pdf_path).trim()
+    ? String(pdfMetaRow.pdf_path).trim()
+    : ''
+  if (!storedPdfPath) {
+    const status = 409
+    const message = '正式PDFの保存に失敗したため送付できません。請求書PDFを再生成してから再実行してください。'
+    console.error(
+      `[API] send blocked invoice_id=${idNum} status=${status} message=${message} pdf_path=(null)`
+    )
+    return c.json(
+      {
+        success: false,
+        error: 'PDF_REQUIRED_BEFORE_SEND',
+        message,
+      },
+      status
+    )
+  }
 
   // (1) portal先行：失敗したら送付済にしない
   if (addToPortal) {
@@ -3986,8 +4112,30 @@ api.post('/invoices/:id/send', async (c) => {
           portal_invoice_id: portalInvoiceId,
           delivery_id: Number(delivery.id),
           snapshot: {
-            delivery,
-            items: itemsByDelivery.get(Number(delivery.id)) || []
+            delivery: {
+              id: Number(delivery.id),
+              delivery_no: delivery.delivery_no || null,
+              delivery_date: delivery.delivery_date || null,
+              subtotal: Number(delivery.subtotal || 0),
+              tax_amount: Number(delivery.tax_amount || 0),
+              total_amount: Number(delivery.total_amount || 0),
+            },
+            items: (itemsByDelivery.get(Number(delivery.id)) || []).map((item: any) => ({
+              id: item.id,
+              product_name: item.product_name || '',
+              quantity: Number(item.quantity || 0),
+              unit_price: Number(item.unit_price || 0),
+              amount: Number(item.amount || (Number(item.quantity || 0) * Number(item.unit_price || 0))),
+              tax_rate: getTaxRate(item.tax_rate),
+              notes: item.notes || '',
+              item_notes: item.item_notes || '',
+              display_order: Number(item.display_order || 0),
+            })),
+            invoice_summary: {
+              subtotal: Number(invoice.subtotal || 0),
+              tax_amount: Number(invoice.tax_amount || 0),
+              total_amount: Number(invoice.total_amount || 0),
+            },
           },
           created_at: new Date().toISOString(),
         }))
@@ -4066,32 +4214,116 @@ api.post('/invoices/:id/send', async (c) => {
 // =====================================
 api.get('/portal/me/companies', async (c) => {
   const userId = getResolvedUserId(c)
-  const { data, error } = await supabase
+  const { data: profileRows, error: profileError } = await supabase
     .from('portal_company_profiles')
     .select('id, display_name, postal_code, address, phone, fax, email, source, created_at, updated_at')
     .eq('owner_user_id', userId)
     .order('updated_at', { ascending: false })
 
-  if (error) return handleSupabaseError(c, error, 'portal_company_profiles select')
-  console.log(`[API] GET /api/portal/me/companies user_id=${userId} count=${(data || []).length}`)
-  return c.json({ success: true, profiles: data || [] })
+  if (profileError) return handleSupabaseError(c, profileError, 'portal_company_profiles select')
+
+  const profileIds = (profileRows || []).map((row: any) => row.id).filter(Boolean)
+  let linkRows: any[] = []
+  if (profileIds.length > 0) {
+    const { data: rows, error: linkError } = await supabase
+      .from('portal_profile_links')
+      .select('profile_id, portal_company_id')
+      .in('profile_id', profileIds)
+    if (linkError) return handleSupabaseError(c, linkError, 'portal_profile_links select for me/companies')
+    linkRows = rows || []
+  }
+
+  const linkedProfileIds = new Set<string>(linkRows.map((row: any) => String(row.profile_id)))
+  const profiles = (profileRows || []).filter((row: any) => linkedProfileIds.has(String(row.id)))
+
+  const warnings: string[] = []
+  if ((profileRows || []).length === 0) warnings.push('profiles=0')
+  if (linkRows.length === 0) warnings.push('links=0')
+  if ((profileRows || []).length > 0 && profiles.length === 0) warnings.push('linked_profiles=0')
+
+  console.log(
+    `[API] GET /api/portal/me/companies user_id=${userId} profiles=${(profileRows || []).length} links=${linkRows.length} selectable=${profiles.length}`
+  )
+  return c.json({
+    success: true,
+    profiles,
+    ...(warnings.length > 0
+      ? {
+          warnings,
+          debug_counts: {
+            profiles: (profileRows || []).length,
+            links: linkRows.length,
+            selectable_profiles: profiles.length,
+          },
+        }
+      : {}),
+  })
 })
+
+function isMissingColumnError(error: any): boolean {
+  const code = String((error && error.code) || '')
+  const message = String((error && error.message) || '').toLowerCase()
+  return code === '42703' || message.includes('column') && message.includes('does not exist')
+}
+
+async function detectAvailableColumns(table: string, candidates: string[]): Promise<string[]> {
+  const found: string[] = []
+  for (const col of candidates) {
+    const { error } = await supabase
+      .from(table)
+      .select(col)
+      .limit(1)
+    if (!error) {
+      found.push(col)
+      continue
+    }
+    if (!isMissingColumnError(error)) {
+      throw error
+    }
+  }
+  return found
+}
+
+function parseFilterYYYYMM(v: string): { y: number; m: number } | null {
+  const s = String(v || '').trim()
+  if (!/^\d{4}-\d{2}$/.test(s)) return null
+  const y = Number(s.slice(0, 4))
+  const m = Number(s.slice(5, 7))
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null
+  return { y, m }
+}
+
+function toYYYYMM(value: unknown): string | null {
+  const raw = String(value || '').trim()
+  const m = raw.match(/^(\d{4})-(\d{2})/)
+  if (!m) return null
+  const month = Number(m[2])
+  if (!Number.isFinite(month) || month < 1 || month > 12) return null
+  return `${m[1]}-${m[2]}`
+}
 
 api.get('/portal/invoices', async (c) => {
   const userId = getResolvedUserId(c)
   const profileId = (c.req.query('profile_id') || '').trim()
-  const state = (c.req.query('state') || '').trim()
-  const search = (c.req.query('search') || '').trim()
-  const { from, to, error: dateError } = getPortalDateRange(c)
+  const status = (c.req.query('status') || c.req.query('state') || '').trim()
+  const q = (c.req.query('q') || c.req.query('search') || '').trim()
+  const billingMonthFrom = (c.req.query('billing_month_from') || '').trim()
+  const billingMonthTo = (c.req.query('billing_month_to') || '').trim()
 
   if (!profileId) {
     return c.json({ success: false, error: 'PROFILE_ID_REQUIRED', message: 'profile_id は必須です' }, 400)
   }
-  if (dateError) {
-    return c.json({ success: false, error: dateError, message: '期間の形式が不正です（YYYY-MM-DD）' }, 400)
+  if (status && !['unconfirmed', 'approved', 'rejected'].includes(status)) {
+    return c.json({ success: false, error: 'INVALID_STATUS', message: 'status は unconfirmed/approved/rejected のみ指定可能です' }, 400)
   }
-  if (state && !['unconfirmed', 'approved', 'rejected'].includes(state)) {
-    return c.json({ success: false, error: 'INVALID_STATE', message: 'state は unconfirmed/approved/rejected のみ指定可能です' }, 400)
+  if (billingMonthFrom && !parseFilterYYYYMM(billingMonthFrom)) {
+    return c.json({ success: false, error: 'INVALID_BILLING_MONTH_FROM', message: 'billing_month_from は YYYY-MM 形式で指定してください' }, 400)
+  }
+  if (billingMonthTo && !parseFilterYYYYMM(billingMonthTo)) {
+    return c.json({ success: false, error: 'INVALID_BILLING_MONTH_TO', message: 'billing_month_to は YYYY-MM 形式で指定してください' }, 400)
+  }
+  if (billingMonthFrom && billingMonthTo && billingMonthFrom > billingMonthTo) {
+    return c.json({ success: false, error: 'INVALID_BILLING_MONTH_RANGE', message: 'billing_month_from は billing_month_to 以下で指定してください' }, 400)
   }
 
   const { data: profile, error: profileError } = await supabase
@@ -4117,23 +4349,92 @@ api.get('/portal/invoices', async (c) => {
 
   let invoiceQuery = supabase
     .from('portal_invoices')
-    .select('id, invoice_id, client_id, company_id, created_at, updated_at')
+    .select('id, invoice_id, client_id, company_id, user_id, created_at, updated_at')
     .in('company_id', companyIds)
     .order('created_at', { ascending: false })
 
-  if (from) invoiceQuery = invoiceQuery.gte('created_at', `${from}T00:00:00.000Z`)
-  if (to) invoiceQuery = invoiceQuery.lte('created_at', `${to}T23:59:59.999Z`)
-
-  const { data: portalInvoices, error: invoicesError } = await invoiceQuery
+  let { data: portalInvoices, error: invoicesError } = await invoiceQuery
   if (invoicesError) return handleSupabaseError(c, invoicesError, 'portal_invoices list')
   if (!portalInvoices || portalInvoices.length === 0) {
     return c.json({ success: true, invoices: [] })
   }
 
-  const portalInvoiceIds = portalInvoices.map((row: any) => row.id)
-  const invoiceIds = portalInvoices.map((row: any) => Number(row.invoice_id)).filter((n: number) => Number.isFinite(n))
+  let invoiceIds = portalInvoices.map((row: any) => Number(row.invoice_id)).filter((n: number) => Number.isFinite(n))
 
-  const [statusRes, viewsRes, invoiceMetaRes] = await Promise.all([
+  let keywordMatchedInvoiceIds: Set<number> | null = null
+  if (q && invoiceIds.length > 0) {
+    const keywordColumns = [
+      'invoice_no',
+      'invoice_number',
+      'sender_name',
+      'vendor_name',
+      'issuer_name',
+      'subject',
+      'title',
+      'memo',
+    ]
+    const availableKeywordColumns = await detectAvailableColumns('invoices', keywordColumns)
+    if (availableKeywordColumns.length > 0) {
+      const searchPattern = `%${q}%`
+      let keywordQuery: any = supabase
+        .from('invoices')
+        .select('id')
+        .in('id', invoiceIds)
+      keywordQuery = keywordQuery.or(
+        availableKeywordColumns.map((col: string) => `${col}.ilike.${searchPattern}`).join(',')
+      )
+      const { data: keywordRows, error: keywordError } = await keywordQuery
+      if (keywordError) return handleSupabaseError(c, keywordError, 'invoices keyword filter')
+      keywordMatchedInvoiceIds = new Set<number>(
+        (keywordRows || []).map((row: any) => Number(row.id)).filter((n: number) => Number.isFinite(n))
+      )
+    } else {
+      keywordMatchedInvoiceIds = new Set<number>()
+    }
+  }
+
+  const availablePeriodToColumns = await detectAvailableColumns('invoices', [
+    'period_to',
+    'billing_period_to',
+    'billing_period_end',
+  ])
+  const availablePeriodFromColumns = await detectAvailableColumns('invoices', [
+    'period_from',
+    'billing_period_from',
+    'billing_period_start',
+  ])
+  const availableIssueDateColumns = await detectAvailableColumns('invoices', [
+    'issue_date',
+    'invoice_date',
+  ])
+  const availableDeletedAtColumns = await detectAvailableColumns('invoices', [
+    'deleted_at',
+  ])
+  const availableIsDeletedColumns = await detectAvailableColumns('invoices', [
+    'is_deleted',
+  ])
+  const availableArchivedColumns = await detectAvailableColumns('invoices', [
+    'archived',
+    'is_archived',
+  ])
+  const periodToColumn = availablePeriodToColumns[0] || null
+  const periodFromColumn = availablePeriodFromColumns[0] || null
+  const issueDateColumn = availableIssueDateColumns[0] || null
+  const deletedAtColumn = availableDeletedAtColumns[0] || null
+  const isDeletedColumn = availableIsDeletedColumns[0] || null
+  const archivedColumn = availableArchivedColumns[0] || null
+  const invoiceMetaSelectColumns = ['id', 'invoice_no', 'invoice_date', 'total_amount']
+  ;[periodToColumn, periodFromColumn, issueDateColumn, deletedAtColumn, isDeletedColumn, archivedColumn].forEach((col) => {
+    if (col && !invoiceMetaSelectColumns.includes(col)) invoiceMetaSelectColumns.push(col)
+  })
+
+  const portalInvoiceIds = portalInvoices.map((row: any) => row.id)
+
+  const senderUserIds = Array.from(
+    new Set((portalInvoices || []).map((row: any) => String(row.user_id || '')).filter(Boolean))
+  )
+
+  const [statusRes, viewsRes, invoiceMetaRes, senderCompanyRes] = await Promise.all([
     supabase
       .from('portal_invoice_status')
       .select('portal_invoice_id, state, updated_at, rejected_reason')
@@ -4146,28 +4447,56 @@ api.get('/portal/invoices', async (c) => {
     invoiceIds.length > 0
       ? supabase
           .from('invoices')
-          .select('id, invoice_no, invoice_date, total_amount')
+          .select(invoiceMetaSelectColumns.join(','))
           .in('id', invoiceIds)
+      : Promise.resolve({ data: [], error: null } as any),
+    senderUserIds.length > 0
+      ? supabase
+          .from('company_info')
+          .select('user_id, company_name, id')
+          .in('user_id', senderUserIds)
       : Promise.resolve({ data: [], error: null } as any),
   ])
 
   if (statusRes.error) return handleSupabaseError(c, statusRes.error, 'portal_invoice_status list')
   if (viewsRes.error) return handleSupabaseError(c, viewsRes.error, 'portal_invoice_views list')
   if (invoiceMetaRes.error) return handleSupabaseError(c, invoiceMetaRes.error, 'invoices meta list')
+  if (senderCompanyRes.error) return handleSupabaseError(c, senderCompanyRes.error, 'company_info sender list')
 
   const statusMap = new Map<string, any>((statusRes.data || []).map((row: any) => [String(row.portal_invoice_id), row]))
   const viewedSet = new Set<string>((viewsRes.data || []).map((row: any) => String(row.portal_invoice_id)))
-  const invoiceMetaMap = new Map<string, any>((invoiceMetaRes.data || []).map((row: any) => [String(row.id), row]))
+  const activeInvoiceMetaRows = (invoiceMetaRes.data || []).filter((row: any) => {
+    const deletedAtValue = deletedAtColumn ? row?.[deletedAtColumn] : null
+    const isDeletedValue = isDeletedColumn ? row?.[isDeletedColumn] : false
+    const archivedValue = archivedColumn ? row?.[archivedColumn] : false
+    return !deletedAtValue && isDeletedValue !== true && archivedValue !== true
+  })
+  const invoiceMetaMap = new Map<string, any>(activeInvoiceMetaRows.map((row: any) => [String(row.id), row]))
+  portalInvoices = portalInvoices.filter((row: any) => invoiceMetaMap.has(String(row.invoice_id)))
+  if (portalInvoices.length === 0) {
+    return c.json({ success: true, invoices: [] })
+  }
+  const senderCompanyMap = new Map<string, string>()
+  for (const row of (senderCompanyRes.data || [])) {
+    const key = String((row as any).user_id || '')
+    if (!key || senderCompanyMap.has(key)) continue
+    senderCompanyMap.set(key, String((row as any).company_name || '').trim())
+  }
 
   let result = portalInvoices.map((row: any) => {
     const statusRow = statusMap.get(String(row.id))
     const meta = invoiceMetaMap.get(String(row.invoice_id))
     const stateValue = statusRow?.state || 'unconfirmed'
+    const billingTargetMonth =
+      toYYYYMM(periodToColumn ? meta?.[periodToColumn] : null) ||
+      toYYYYMM(periodFromColumn ? meta?.[periodFromColumn] : null) ||
+      toYYYYMM(issueDateColumn ? meta?.[issueDateColumn] : null)
     return {
       id: String(row.id),
       invoice_id: row.invoice_id,
       client_id: row.client_id,
       company_id: row.company_id,
+      user_id: row.user_id,
       created_at: row.created_at,
       updated_at: row.updated_at,
       state: stateValue,
@@ -4178,23 +4507,40 @@ api.get('/portal/invoices', async (c) => {
         : null,
       invoice_no: meta?.invoice_no || null,
       invoice_date: meta?.invoice_date || null,
+      billing_target_month: billingTargetMonth,
       total_amount: meta?.total_amount || 0,
+      sender_company_name: senderCompanyMap.get(String(row.user_id || '')) || null,
     }
   })
 
-  if (state) {
-    result = result.filter((row: any) => row.state === state)
+  if (billingMonthFrom) {
+    result = result.filter((row: any) => row.billing_target_month && row.billing_target_month >= billingMonthFrom)
   }
-  if (search) {
-    const lowered = search.toLowerCase()
+  if (billingMonthTo) {
+    result = result.filter((row: any) => row.billing_target_month && row.billing_target_month <= billingMonthTo)
+  }
+
+  if (status) {
+    result = result.filter((row: any) => row.state === status)
+  }
+  if (q) {
+    const lowered = q.toLowerCase()
     result = result.filter((row: any) => {
       const portalInvoiceId = String(row.id || '').toLowerCase()
       const invoiceIdStr = String(row.invoice_id || '').toLowerCase()
       const invoiceNo = String(row.invoice_no || '').toLowerCase()
+      const senderCompanyName = String(row.sender_company_name || '').toLowerCase()
+      const invoiceIdNum = Number(row.invoice_id)
+      const matchedByInvoiceColumns =
+        keywordMatchedInvoiceIds !== null &&
+        Number.isFinite(invoiceIdNum) &&
+        keywordMatchedInvoiceIds.has(invoiceIdNum)
       return (
+        matchedByInvoiceColumns ||
         portalInvoiceId.includes(lowered) ||
         invoiceIdStr.includes(lowered) ||
-        invoiceNo.includes(lowered)
+        invoiceNo.includes(lowered) ||
+        senderCompanyName.includes(lowered)
       )
     })
   }
@@ -4208,7 +4554,7 @@ api.get('/portal/invoices/:portalInvoiceId', async (c) => {
 
   const { data: portalInvoice, error: portalInvoiceError } = await supabase
     .from('portal_invoices')
-    .select('id, invoice_id, client_id, company_id, created_at, updated_at')
+    .select('id, invoice_id, client_id, company_id, user_id, created_at, updated_at')
     .eq('id', portalInvoiceId)
     .maybeSingle()
   if (portalInvoiceError) return handleSupabaseError(c, portalInvoiceError, 'portal_invoices detail')
@@ -4256,7 +4602,7 @@ api.get('/portal/invoices/:portalInvoiceId', async (c) => {
       .order('created_at', { ascending: true }),
     supabase
       .from('invoices')
-      .select('id, invoice_no, invoice_date, total_amount, notes')
+      .select('id, client_id, invoice_no, invoice_date, subtotal, tax_amount, total_amount, notes')
       .eq('id', portalInvoice.invoice_id)
       .maybeSingle(),
     supabase
@@ -4272,6 +4618,36 @@ api.get('/portal/invoices/:portalInvoiceId', async (c) => {
   if (eventsRes.error) return handleSupabaseError(c, eventsRes.error, 'portal events detail')
   if (invoiceRes.error) return handleSupabaseError(c, invoiceRes.error, 'invoice detail for portal')
   if (currentViewRes.error) return handleSupabaseError(c, currentViewRes.error, 'portal view detail')
+  if (!invoiceRes.data) {
+    return c.json({ success: false, error: 'INVOICE_NOT_FOUND', message: '請求書は削除済みです' }, 404)
+  }
+
+  const senderUserId = String((portalInvoice as any)?.user_id || '')
+  let senderCompanyName: string | null = null
+  if (senderUserId) {
+    const senderRes = await supabase
+      .from('company_info')
+      .select('company_name')
+      .eq('user_id', senderUserId)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (senderRes.error) return handleSupabaseError(c, senderRes.error, 'company_info sender detail')
+    senderCompanyName = senderRes.data?.company_name ? String(senderRes.data.company_name) : null
+  }
+
+  const invoiceClientId = Number((invoiceRes.data as any)?.client_id || 0)
+  let recipientClient: any = null
+  if (invoiceClientId > 0) {
+    const recipientRes = await supabase
+      .from('clients')
+      .select('*')
+      .eq('id', invoiceClientId)
+      .eq('user_id', senderUserId || DEMO_USER_ID)
+      .maybeSingle()
+    if (recipientRes.error) return handleSupabaseError(c, recipientRes.error, 'clients recipient detail for portal')
+    recipientClient = recipientRes.data || null
+  }
 
   if (!currentViewRes.data) {
     const { error: viewUpsertError } = await supabase
@@ -4298,12 +4674,14 @@ api.get('/portal/invoices/:portalInvoiceId', async (c) => {
     success: true,
     invoice: {
       ...portalInvoice,
+      sender_company_name: senderCompanyName,
       state: statusRes.data?.state || 'unconfirmed',
       rejected_reason: statusRes.data?.rejected_reason || null,
       status_updated_at: statusRes.data?.updated_at || null,
       snapshot_rows: snapshotsRes.data || [],
       events: eventsRes.data || [],
       base_invoice: invoiceRes.data || null,
+      recipient_client: recipientClient,
       is_read: true,
       first_viewed_at: currentViewRes.data?.first_viewed_at || new Date().toISOString(),
     },
@@ -4316,7 +4694,7 @@ api.get('/portal/invoices/:portalInvoiceId/pdf', async (c) => {
 
   const detailRes = await supabase
     .from('portal_invoices')
-    .select('id, invoice_id, company_id, created_at')
+    .select('id, invoice_id, company_id, user_id, created_at')
     .eq('id', portalInvoiceId)
     .maybeSingle()
   if (detailRes.error) return handleSupabaseError(c, detailRes.error, 'portal invoice pdf detail')
@@ -4346,23 +4724,71 @@ api.get('/portal/invoices/:portalInvoiceId/pdf', async (c) => {
   const invoiceId = Number(detailRes.data.invoice_id)
   const { data: invoiceMeta } = await supabase
     .from('invoices')
-    .select('id, invoice_no, invoice_date, total_amount')
+    .select('id, invoice_no, invoice_date, billing_period_start, total_amount, pdf_path, pdf_size')
     .eq('id', invoiceId)
     .maybeSingle()
 
-  const pdfBytes = buildSimplePdfBuffer([
-    'SmartBill Portal Invoice',
-    `Portal Invoice ID: ${portalInvoiceId}`,
-    `Invoice ID: ${invoiceId}`,
-    `Invoice No: ${invoiceMeta?.invoice_no || '-'}`,
-    `Invoice Date: ${invoiceMeta?.invoice_date || '-'}`,
-    `Total Amount: ${Number(invoiceMeta?.total_amount || 0).toLocaleString('ja-JP')}`,
-    `Downloaded At: ${new Date().toISOString()}`,
-  ])
+  let senderCompanyName = 'sender'
+  const senderUserId = detailRes.data && (detailRes.data as any).user_id ? String((detailRes.data as any).user_id) : ''
+  if (senderUserId) {
+    const senderRes = await supabase
+      .from('company_info')
+      .select('company_name')
+      .eq('user_id', senderUserId)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (senderRes.error) return handleSupabaseError(c, senderRes.error, 'company_info sender for portal pdf')
+    senderCompanyName = senderRes.data?.company_name ? String(senderRes.data.company_name) : senderCompanyName
+  }
+  const yyyymmRaw = String(invoiceMeta?.billing_period_start || invoiceMeta?.invoice_date || '')
+  const yyyymm = /^(\d{4})-(\d{2})/.test(yyyymmRaw)
+    ? `${yyyymmRaw.slice(0, 4)}${yyyymmRaw.slice(5, 7)}`
+    : String(new Date().toISOString().slice(0, 7)).replace('-', '')
+  const safeSenderName = toSafePdfFileNameBase(senderCompanyName || 'sender').replace(/[\r\n]/g, '')
+  const fileNameUtf8 = `${yyyymm}_${safeSenderName}.pdf`
+  const contentDisposition = buildContentDispositionAttachment(fileNameUtf8)
 
-  return c.newResponse(pdfBytes, 200, {
+  const pdfPath = invoiceMeta?.pdf_path ? String(invoiceMeta.pdf_path).trim() : ''
+  if (!pdfPath) {
+    const status = 404
+    const message = '正式PDFが未保存のためダウンロードできません'
+    console.error(
+      `[API] portal pdf failed invoice_id=${invoiceId} status=${status} message=${message} pdf_path=(null)`
+    )
+    return c.json({ success: false, error: 'PDF_NOT_READY', message }, status)
+  }
+
+  const { data: fileBlob, error: fileError } = await supabaseAdmin.storage
+    .from(INVOICE_PDF_BUCKET)
+    .download(pdfPath)
+  if (fileError || !fileBlob) {
+    const anyErr = fileError as any
+    const status = Number(anyErr?.statusCode || anyErr?.status || 502)
+    const message = anyErr?.message || 'PDF_STORAGE_DOWNLOAD_FAILED'
+    console.error(
+      `[API] portal pdf failed invoice_id=${invoiceId} status=${status} message=${message} pdf_path=${pdfPath}`
+    )
+    return c.json({ success: false, error: 'PDF_STORAGE_DOWNLOAD_FAILED', message }, 502)
+  }
+
+  const bytes = await fileBlob.arrayBuffer()
+  if (!bytes || bytes.byteLength <= 0) {
+    const status = 502
+    const message = 'PDF_EMPTY'
+    console.error(
+      `[API] portal pdf failed invoice_id=${invoiceId} status=${status} message=${message} pdf_path=${pdfPath}`
+    )
+    return c.json({ success: false, error: 'PDF_EMPTY', message: 'PDFデータが空です' }, status)
+  }
+
+  console.log(
+    `[API] portal pdf download ok invoice_id=${invoiceId} pdf_path=${pdfPath} size=${bytes.byteLength}`
+  )
+  return c.newResponse(bytes, 200, {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': `attachment; filename="portal-invoice-${portalInvoiceId}.pdf"`,
+    'Content-Disposition': contentDisposition,
+    'Content-Length': String(bytes.byteLength),
   })
 })
 
@@ -4427,10 +4853,39 @@ api.post('/portal/invoices/:portalInvoiceId/reject', async (c) => {
   const userId = getResolvedUserId(c)
   const portalInvoiceId = c.req.param('portalInvoiceId')
   const body = await c.req.json().catch(() => ({}))
-  const reason = String(body.reason || '').trim()
-  if (!reason) {
+  const allowedReasonCodes = new Set([
+    'AMOUNT_MISMATCH',
+    'ITEM_ERROR',
+    'BILLING_MONTH_WRONG',
+    'CLIENT_INFO_ERROR',
+    'MISSING_DOCS',
+    'DUPLICATE',
+    'OTHER',
+  ])
+  const reasonCodeRaw = String(body.reason_code || '').trim().toUpperCase()
+  const reasonTextRaw = String(body.reason_text || '').trim()
+  const legacyReason = String(body.reason || '').trim()
+  const reasonCode = reasonCodeRaw || (legacyReason ? 'OTHER' : '')
+  const reasonText = reasonTextRaw || legacyReason
+  if (!reasonCode) {
     return c.json({ success: false, error: 'REASON_REQUIRED', message: '差し戻し理由は必須です' }, 400)
   }
+  if (!allowedReasonCodes.has(reasonCode)) {
+    return c.json({ success: false, error: 'REASON_CODE_INVALID', message: '差し戻し理由の選択が不正です' }, 400)
+  }
+  if (reasonCode === 'OTHER' && !reasonText) {
+    return c.json({ success: false, error: 'REASON_TEXT_REQUIRED', message: 'その他を選択した場合、詳細は必須です' }, 400)
+  }
+  const reasonCodeLabelMap: Record<string, string> = {
+    AMOUNT_MISMATCH: '金額が一致しない',
+    ITEM_ERROR: '明細内容の不備（品名・数量など）',
+    BILLING_MONTH_WRONG: '請求対象月（年月）が違う',
+    CLIENT_INFO_ERROR: '取引先情報の不備（住所・担当など）',
+    MISSING_DOCS: '添付/関連書類が不足（納品書など）',
+    DUPLICATE: '二重請求の可能性',
+    OTHER: 'その他',
+  }
+  const normalizedReasonForStatus = reasonText || reasonCodeLabelMap[reasonCode] || reasonCode
 
   const { data: portalInvoice, error: invoiceError } = await supabase
     .from('portal_invoices')
@@ -4464,7 +4919,7 @@ api.post('/portal/invoices/:portalInvoiceId/reject', async (c) => {
       {
         portal_invoice_id: portalInvoiceId,
         state: 'rejected',
-        rejected_reason: reason,
+        rejected_reason: normalizedReasonForStatus,
         updated_at: now,
       },
       { onConflict: 'portal_invoice_id' }
@@ -4477,7 +4932,10 @@ api.post('/portal/invoices/:portalInvoiceId/reject', async (c) => {
       portal_invoice_id: portalInvoiceId,
       actor_user_id: userId,
       type: 'rejected',
-      payload: { reason },
+      payload: {
+        reason_code: reasonCode,
+        reason_text: reasonText || null,
+      },
       created_at: now,
     })
   if (eventError) return handleSupabaseError(c, eventError, 'portal_invoice_events reject')
@@ -4508,6 +4966,17 @@ api.get('/portal/company-profile/:profileId', async (c) => {
   if (requestsRes.error) return handleSupabaseError(c, requestsRes.error, 'portal_company_change_requests list')
 
   return c.json({ success: true, profile: profileRes.data, change_requests: requestsRes.data || [] })
+})
+
+api.patch('/portal/company-profile/:profileId', async (c) => {
+  return c.json(
+    {
+      ok: false,
+      code: 'PROFILE_READ_ONLY',
+      message: 'Recipient cannot edit company profile. Please submit a correction request.',
+    },
+    403
+  )
 })
 
 api.post('/portal/company-profile/:profileId/change-requests', async (c) => {

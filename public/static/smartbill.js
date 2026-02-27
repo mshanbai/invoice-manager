@@ -488,47 +488,14 @@ window.SmartBill.formatPostalCode = function(value) {
   return cleaned;
 };
 
-// 電話番号の自動フォーマット
+// 電話番号の入力正規化（自動ハイフン推測は行わない）
 window.SmartBill.formatPhoneNumber = function(value) {
-  var cleaned = value.replace(/[^0-9]/g, '');
-  
-  // 携帯番号（090, 080, 070）
-  if (/^0[789]0/.test(cleaned)) {
-    if (cleaned.length >= 7) {
-      return cleaned.substring(0, 3) + '-' + cleaned.substring(3, 7) + '-' + cleaned.substring(7, 11);
-    } else if (cleaned.length >= 4) {
-      return cleaned.substring(0, 3) + '-' + cleaned.substring(3);
-    }
-  }
-  // 固定電話（東京03など市外局番2桁）
-  else if (/^0[3456]/.test(cleaned) && cleaned.length > 2) {
-    if (cleaned.length >= 6) {
-      return cleaned.substring(0, 2) + '-' + cleaned.substring(2, 6) + '-' + cleaned.substring(6, 10);
-    } else if (cleaned.length >= 3) {
-      return cleaned.substring(0, 2) + '-' + cleaned.substring(2);
-    }
-  }
-  // その他（市外局番3桁または4桁）
-  else if (/^0/.test(cleaned) && cleaned.length > 3) {
-    // 0120など
-    if (/^0120/.test(cleaned)) {
-      if (cleaned.length >= 7) {
-        return cleaned.substring(0, 4) + '-' + cleaned.substring(4, 7) + '-' + cleaned.substring(7, 10);
-      } else if (cleaned.length >= 5) {
-        return cleaned.substring(0, 4) + '-' + cleaned.substring(4);
-      }
-    }
-    // 一般的な3桁市外局番
-    else {
-      if (cleaned.length >= 7) {
-        return cleaned.substring(0, 3) + '-' + cleaned.substring(3, 6) + '-' + cleaned.substring(6, 10);
-      } else if (cleaned.length >= 4) {
-        return cleaned.substring(0, 3) + '-' + cleaned.substring(3);
-      }
-    }
-  }
-  
-  return cleaned;
+  return String(value || '')
+    .trim()
+    .replace(/[！-～]/g, function(ch) {
+      return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+    })
+    .replace(/　/g, ' ');
 };
 
 // 入力フィールドの自動フォーマット設定
@@ -555,14 +522,11 @@ window.SmartBill.setupAutoFormat = function() {
     });
   });
   
-  // 電話番号フィールドの自動フォーマット（tel, fax, mobile）
+  // 電話番号フィールドの入力正規化（tel, fax, mobile）
   var phoneInputs = document.querySelectorAll('input[name="tel"], input[name="fax"], input[name="mobile"]');
   phoneInputs.forEach(function(input) {
     input.addEventListener('blur', function(e) {
-      var formatted = window.SmartBill.formatPhoneNumber(e.target.value);
-      if (formatted !== e.target.value) {
-        e.target.value = formatted;
-      }
+      e.target.value = window.SmartBill.formatPhoneNumber(e.target.value);
     });
   });
 };
