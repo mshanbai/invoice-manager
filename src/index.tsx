@@ -4,6 +4,14 @@ import { Layout } from './components/Layout'
 import { FabricCalculatorPage } from './features/fabric-calculator'
 import api from './routes/api'
 import { accountTypeCodeToLabel, normalizeAccountTypeToCode } from './utils/bankAccount'
+import {
+  calculateTaxSummary,
+  normalizeTaxRoundingMode,
+  normalizeTaxRoundingUnit,
+  roundByTaxMode,
+  resolveItemTaxRate,
+  toFiniteNumber,
+} from './utils/taxCalculation'
 
 const app = new Hono()
 
@@ -74,7 +82,35 @@ const taxRateHelpers = `
     }
     return resolveCategoryTaxRate(category, fallback);
   }
+  function normalizeTaxRateColumnMode(modeLike) {
+    var mode = String(modeLike || '').trim().toUpperCase();
+    if (mode === 'ON') return 'ON';
+    if (mode === 'OFF') return 'OFF';
+    return 'AUTO';
+  }
+  function shouldShowTaxRateColumn(items, modeLike) {
+    var mode = normalizeTaxRateColumnMode(modeLike);
+    if (mode === 'ON') return true;
+    if (mode === 'OFF') return false;
+    var list = Array.isArray(items) ? items : [];
+    var rates = {};
+    for (var i = 0; i < list.length; i++) {
+      var rate = normalizeTaxRate(list[i] && list[i].tax_rate, 10);
+      rates[String(rate)] = true;
+      if (Object.keys(rates).length >= 2) return true;
+    }
+    return false;
+  }
 `;
+
+const taxCalculationHelpers = `
+  var toFiniteNumber = ${toFiniteNumber.toString()};
+  var normalizeTaxRoundingUnit = ${normalizeTaxRoundingUnit.toString()};
+  var normalizeTaxRoundingMode = ${normalizeTaxRoundingMode.toString()};
+  var roundByTaxMode = ${roundByTaxMode.toString()};
+  var resolveItemTaxRate = ${resolveItemTaxRate.toString()};
+  var calculateTaxSummary = ${calculateTaxSummary.toString()};
+`
 
 const recentAccordionScript = `
   (function setupRecentAccordion() {
@@ -717,6 +753,54 @@ app.get('/company', async (c) => {
               </p>
             </div>
 
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              <div>
+                <label class="block text-sm font-bold text-indigo-700 mb-2">税率列表示モード（見積・納品・請求 共通）</label>
+                <select name="tax_rate_column_mode" class="w-full border-2 border-indigo-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 bg-white">
+                  <option value="AUTO">AUTO</option>
+                  <option value="ON">ON</option>
+                  <option value="OFF">OFF</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-bold text-indigo-700 mb-2">税の丸め単位</label>
+                <select name="tax_rounding_unit" class="w-full border-2 border-indigo-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 bg-white">
+                  <option value="PER_LINE">PER_LINE（明細行ごと）</option>
+                  <option value="PER_RATE">PER_RATE（税率ごと）</option>
+                </select>
+                <p class="text-xs text-gray-500 mt-1"><i class="fas fa-info-circle mr-1"></i>適格請求書として運用する場合は「税の丸め単位：税率ごと（PER_RATE）」を推奨します。</p>
+              </div>
+              <div>
+                <label class="block text-sm font-bold text-indigo-700 mb-2">税の丸め方法</label>
+                <select name="tax_rounding_mode" class="w-full border-2 border-indigo-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 bg-white">
+                  <option value="FLOOR">FLOOR（切り捨て）</option>
+                  <option value="CEIL">CEIL（切り上げ）</option>
+                  <option value="ROUND">ROUND（四捨五入）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mt-6 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+              <h3 class="text-sm font-bold text-emerald-800 mb-4"><i class="fas fa-barcode mr-2"></i>見積書：JAN/商品番号列</h3>
+              <label class="flex items-center cursor-pointer mb-3">
+                <input type="checkbox" name="estimate_code_column_enabled" id="estimateCodeColumnEnabled" class="w-4 h-4 text-emerald-600 rounded" />
+                <span class="ml-2 text-sm font-medium text-emerald-800">見積書にコード列を表示する</span>
+              </label>
+              <div id="estimateCodeColumnKindSection">
+                <label class="block text-xs font-bold text-emerald-700 mb-2">表示する列種別</label>
+                <div class="flex gap-4">
+                  <label class="flex items-center">
+                    <input type="radio" name="estimate_code_column_kind" value="JAN" class="w-4 h-4 text-emerald-600" />
+                    <span class="ml-2 text-sm text-emerald-800">JAN</span>
+                  </label>
+                  <label class="flex items-center">
+                    <input type="radio" name="estimate_code_column_kind" value="PRODUCT_CODE" class="w-4 h-4 text-emerald-600" />
+                    <span class="ml-2 text-sm text-emerald-800">商品番号</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
             {/* 見積有効期限・締め日・支払い期限 */}
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div>
@@ -1175,6 +1259,17 @@ app.get('/company', async (c) => {
         var taxTypeRadios = document.querySelectorAll('input[name="default_tax_type"]');
         var customTaxSection = document.getElementById('customTaxRateSection');
         var defaultTaxRateInput = document.getElementById('defaultTaxRate');
+        var estimateCodeColumnEnabled = document.getElementById('estimateCodeColumnEnabled');
+        var estimateCodeColumnKindSection = document.getElementById('estimateCodeColumnKindSection');
+
+        function updateEstimateCodeColumnKindVisibility() {
+          if (!estimateCodeColumnEnabled || !estimateCodeColumnKindSection) return;
+          estimateCodeColumnKindSection.style.display = estimateCodeColumnEnabled.checked ? 'block' : 'none';
+        }
+
+        if (estimateCodeColumnEnabled) {
+          estimateCodeColumnEnabled.addEventListener('change', updateEstimateCodeColumnKindVisibility);
+        }
         
         taxTypeRadios.forEach(function(radio) {
           radio.addEventListener('change', function() {
@@ -1348,6 +1443,29 @@ app.get('/company', async (c) => {
             if (showTaxToggle) {
               showTaxToggle.checked = data.show_tax_on_estimate_delivery === 1;
             }
+
+            var taxRateColumnModeInput = form.querySelector('[name="tax_rate_column_mode"]');
+            if (taxRateColumnModeInput) {
+              taxRateColumnModeInput.value = data.tax_rate_column_mode || 'AUTO';
+            }
+
+            var taxRoundingUnitInput = form.querySelector('[name="tax_rounding_unit"]');
+            if (taxRoundingUnitInput) {
+              taxRoundingUnitInput.value = data.tax_rounding_unit || 'PER_LINE';
+            }
+
+            var taxRoundingModeInput = form.querySelector('[name="tax_rounding_mode"]');
+            if (taxRoundingModeInput) {
+              taxRoundingModeInput.value = data.tax_rounding_mode || 'FLOOR';
+            }
+
+            if (estimateCodeColumnEnabled) {
+              estimateCodeColumnEnabled.checked = Number(data.estimate_code_column_enabled || 0) === 1;
+            }
+            var estimateCodeColumnKind = data.estimate_code_column_kind || 'JAN';
+            var estimateCodeKindRadio = form.querySelector('[name="estimate_code_column_kind"][value="' + estimateCodeColumnKind + '"]');
+            if (estimateCodeKindRadio) estimateCodeKindRadio.checked = true;
+            updateEstimateCodeColumnKindVisibility();
             
             // 納品書形式（デフォルトはhalf）
             var deliveryFormat = data.delivery_note_format || 'half';
@@ -1455,6 +1573,8 @@ app.get('/company', async (c) => {
           
           // 消費税表示設定（チェックボックスの値を明示的に設定）
           data.show_tax_on_estimate_delivery = document.getElementById('showTaxToggle').checked;
+          data.estimate_code_column_enabled = estimateCodeColumnEnabled ? estimateCodeColumnEnabled.checked : false;
+          if (!data.estimate_code_column_kind) data.estimate_code_column_kind = 'JAN';
           
           // 税率の処理
           if (data.default_tax_type === 'standard') data.default_tax_rate = 10;
@@ -1480,6 +1600,7 @@ app.get('/company', async (c) => {
         
         // データ読み込み後にフォーム変更検知を有効化
         loadCompany().then(function() {
+          updateEstimateCodeColumnKindVisibility();
           setTimeout(function() { window.SmartBill.trackFormChanges('companyForm'); }, 100);
         });
       `}} />
@@ -5374,7 +5495,7 @@ app.get('/deliveries', async (c) => {
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
         ${taxRateHelpers}
-        ${taxRateHelpers}
+        ${taxCalculationHelpers}
         ${recentAccordionScript}
         // 状態管理
         var currentDeliveryId = null;
@@ -5532,6 +5653,7 @@ app.get('/deliveries', async (c) => {
           companySettings = res.data || {};
           updateDeliveryListTotalHeader();
           updateDeliverySummaryLabels();
+          renderItemsTable();
           updateTaxDisplay(document.getElementById('clientSelect').value || null);
           renderDeliveryTable();
           renderSidebarDeliveries();
@@ -5831,7 +5953,22 @@ app.get('/deliveries', async (c) => {
         }
         
         function renderItemsTable() {
+          var thead = document.getElementById('itemsTableHead');
           var tbody = document.getElementById('itemsTableBody');
+          var showTaxRateColumn = shouldShowTaxRateColumn(items, companySettings && companySettings.tax_rate_column_mode);
+
+          if (thead) {
+            thead.innerHTML = '<tr>' +
+              '<th class="px-2 py-2 text-left w-12" title="ドラッグで並び替え可能"><i class="fas fa-grip-vertical text-gray-400 mr-1"></i>#</th>' +
+              '<th class="px-2 py-2 text-left min-w-48">商品名</th>' +
+              '<th class="px-2 py-2 text-right w-28">単価</th>' +
+              '<th class="px-2 py-2 text-center w-20">数量</th>' +
+              (showTaxRateColumn ? '<th class="px-2 py-2 text-center w-20">税率</th>' : '') +
+              '<th class="px-2 py-2 text-right w-28">金額</th>' +
+              '<th class="px-2 py-2">備考</th>' +
+              '<th class="px-2 py-2 w-10"></th>' +
+              '</tr>';
+          }
           
           tbody.innerHTML = items.map(function(item, index) {
             var amount = item.quantity * item.unit_price;
@@ -5851,13 +5988,15 @@ app.get('/deliveries', async (c) => {
               '</div></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-unit-price w-full border rounded px-2 py-1 text-sm text-right" value="' + item.unit_price + '" /></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
-              '<td class="px-2 py-2">' +
-              '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-              customRateOption +
-              '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
-              '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
-              '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
-              '</select></td>' +
+              (showTaxRateColumn
+                ? ('<td class="px-2 py-2">' +
+                  '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
+                  customRateOption +
+                  '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                  '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                  '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
+                  '</select></td>')
+                : '') +
               '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
               '<td class="px-2 py-2"><input type="text" class="item-notes w-full border rounded px-2 py-1 text-sm" value="' + (item.notes || '') + '" placeholder="備考" /></td>' +
               '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
@@ -5918,24 +6057,17 @@ app.get('/deliveries', async (c) => {
         
         // 金額計算
         function calculateTotals() {
-          var subtotal = 0;
-          var taxByRate = {};
-          
-          items.forEach(function(item) {
-            var amount = item.quantity * item.unit_price;
-            subtotal += amount;
-            
-            // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = normalizeTaxRate(item.tax_rate, 10);
-            if (!taxByRate[rate]) taxByRate[rate] = 0;
-            taxByRate[rate] += Math.floor(amount * rate / 100);
+          var taxSummary = calculateTaxSummary(items, {
+            tax_rounding_unit: companySettings && companySettings.tax_rounding_unit,
+            tax_rounding_mode: companySettings && companySettings.tax_rounding_mode,
+            default_tax_rate: 10
           });
-          
-          var totalTax = 0;
+          var subtotal = taxSummary.subtotal || 0;
+          var taxByRate = taxSummary.tax_by_rate || {};
+          var totalTax = taxSummary.tax_amount || 0;
           var taxBreakdownHtml = '';
           Object.keys(taxByRate).sort(function(a, b) { return parseFloat(a) - parseFloat(b); }).forEach(function(rate) {
             var rateNum = parseFloat(rate);
-            totalTax += taxByRate[rate];
             if (rateNum === 0) {
               taxBreakdownHtml += '<div class="flex justify-between py-1 text-xs text-gray-500">' +
                 '<span>非課税</span><span>¥0</span></div>';
@@ -7042,6 +7174,7 @@ app.get('/estimates', async (c) => {
       <script dangerouslySetInnerHTML={{__html: `
         ${docHeaderTitleHelpers}
         ${taxRateHelpers}
+        ${taxCalculationHelpers}
         ${recentAccordionScript}
         // 状態管理
         var currentEstimateId = null;
@@ -7202,6 +7335,7 @@ app.get('/estimates', async (c) => {
           companySettings = res.data || {};
           updateEstimateListTotalHeader();
           updateEstimateSummaryLabels();
+          renderItemsTable();
           updateTaxDisplay(document.getElementById('clientSelect').value || null);
           renderEstimateTable();
           renderSidebarEstimates();
@@ -7528,16 +7662,21 @@ app.get('/estimates', async (c) => {
           var thead = document.getElementById('itemsTableHead');
           var tbody = document.getElementById('itemsTableBody');
           var showRetail = document.querySelector('[name="show_retail"]:checked').value === 'yes';
+          var showTaxRateColumn = shouldShowTaxRateColumn(items, companySettings && companySettings.tax_rate_column_mode);
+          var showEstimateCodeColumn = Number(companySettings && companySettings.estimate_code_column_enabled) === 1;
+          var estimateCodeKind = String((companySettings && companySettings.estimate_code_column_kind) || 'JAN').toUpperCase();
+          var estimateCodeLabel = estimateCodeKind === 'PRODUCT_CODE' ? '商品番号' : 'JAN';
           
           // ヘッダー描画（上代表記の有無で変わる）
           if (showRetail) {
             thead.innerHTML = '<tr>' +
               '<th class="px-2 py-2 text-left w-8">#</th>' +
               '<th class="px-2 py-2 text-left min-w-40">商品名</th>' +
+              (showEstimateCodeColumn ? '<th class="px-2 py-2 text-left w-28">' + estimateCodeLabel + '</th>' : '') +
               '<th class="px-2 py-2 text-right w-24">上代</th>' +
               '<th class="px-2 py-2 text-right w-24">下代</th>' +
               '<th class="px-2 py-2 text-center w-16">数量</th>' +
-              '<th class="px-2 py-2 text-center w-16">税率</th>' +
+              (showTaxRateColumn ? '<th class="px-2 py-2 text-center w-16">税率</th>' : '') +
               '<th class="px-2 py-2 text-right w-24">金額</th>' +
               '<th class="px-2 py-2 w-8"></th>' +
               '</tr>';
@@ -7545,9 +7684,10 @@ app.get('/estimates', async (c) => {
             thead.innerHTML = '<tr>' +
               '<th class="px-2 py-2 text-left w-8">#</th>' +
               '<th class="px-2 py-2 text-left min-w-48">商品名</th>' +
+              (showEstimateCodeColumn ? '<th class="px-2 py-2 text-left w-28">' + estimateCodeLabel + '</th>' : '') +
               '<th class="px-2 py-2 text-right w-28">単価</th>' +
               '<th class="px-2 py-2 text-center w-20">数量</th>' +
-              '<th class="px-2 py-2 text-center w-20">税率</th>' +
+              (showTaxRateColumn ? '<th class="px-2 py-2 text-center w-20">税率</th>' : '') +
               '<th class="px-2 py-2 text-right w-28">金額</th>' +
               '<th class="px-2 py-2 w-10"></th>' +
               '</tr>';
@@ -7558,6 +7698,9 @@ app.get('/estimates', async (c) => {
             var amount = item.quantity * item.unit_price;
             var rateValue = normalizeTaxRate(item.tax_rate, 10);
             var customRateOption = '';
+            var itemCodeValue = estimateCodeKind === 'PRODUCT_CODE'
+              ? String(item.product_code || '')
+              : String(item.jan_code || '');
             if (rateValue !== 10 && rateValue !== 8 && rateValue !== 0) {
               customRateOption = '<option value="' + rateValue + '" selected>' + rateValue + '%</option>';
             }
@@ -7574,16 +7717,19 @@ app.get('/estimates', async (c) => {
                 '</div>' +
                 '<input type="text" class="item-item-notes w-full border border-dashed border-gray-300 rounded px-2 py-0.5 text-xs text-gray-600" value="' + (item.item_notes || '') + '" placeholder="規格・備考（PDFの品名下に表示）" />' +
                 '</td>' +
+                (showEstimateCodeColumn ? '<td class="px-2 py-2 text-sm text-gray-700">' + itemCodeValue + '</td>' : '') +
                 '<td class="px-2 py-2"><input type="number" class="item-retail-price w-full border rounded px-2 py-1 text-sm text-right" value="' + retailDisplay + '" placeholder="-" /></td>' +
                 '<td class="px-2 py-2"><input type="number" class="item-unit-price w-full border rounded px-2 py-1 text-sm text-right" value="' + item.unit_price + '" /></td>' +
                 '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
-                '<td class="px-2 py-2">' +
-                '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-                customRateOption +
-                '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
-                '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
-                '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
-                '</select></td>' +
+                (showTaxRateColumn
+                  ? ('<td class="px-2 py-2">' +
+                    '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
+                    customRateOption +
+                    '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                    '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                    '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
+                    '</select></td>')
+                  : '') +
                 '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
                 '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
                 '</tr>';
@@ -7598,15 +7744,18 @@ app.get('/estimates', async (c) => {
                 '</div>' +
                 '<input type="text" class="item-item-notes w-full border border-dashed border-gray-300 rounded px-2 py-0.5 text-xs text-gray-600" value="' + (item.item_notes || '') + '" placeholder="規格・備考（PDFの品名下に表示）" />' +
                 '</td>' +
+                (showEstimateCodeColumn ? '<td class="px-2 py-2 text-sm text-gray-700">' + itemCodeValue + '</td>' : '') +
                 '<td class="px-2 py-2"><input type="number" class="item-unit-price w-full border rounded px-2 py-1 text-sm text-right" value="' + item.unit_price + '" /></td>' +
                 '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
-                '<td class="px-2 py-2">' +
-                '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-                customRateOption +
-                '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
-                '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
-                '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
-                '</select></td>' +
+                (showTaxRateColumn
+                  ? ('<td class="px-2 py-2">' +
+                    '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
+                    customRateOption +
+                    '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                    '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                    '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
+                    '</select></td>')
+                  : '') +
                 '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
                 '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
                 '</tr>';
@@ -7667,24 +7816,17 @@ app.get('/estimates', async (c) => {
         
         // 金額計算
         function calculateTotals() {
-          var subtotal = 0;
-          var taxByRate = {};
-          
-          items.forEach(function(item) {
-            var amount = item.quantity * item.unit_price;
-            subtotal += amount;
-            
-            // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = normalizeTaxRate(item.tax_rate, 10);
-            if (!taxByRate[rate]) taxByRate[rate] = 0;
-            taxByRate[rate] += Math.floor(amount * rate / 100);
+          var taxSummary = calculateTaxSummary(items, {
+            tax_rounding_unit: companySettings && companySettings.tax_rounding_unit,
+            tax_rounding_mode: companySettings && companySettings.tax_rounding_mode,
+            default_tax_rate: 10
           });
-          
-          var totalTax = 0;
+          var subtotal = taxSummary.subtotal || 0;
+          var taxByRate = taxSummary.tax_by_rate || {};
+          var totalTax = taxSummary.tax_amount || 0;
           var taxBreakdownHtml = '';
           Object.keys(taxByRate).sort(function(a, b) { return parseFloat(a) - parseFloat(b); }).forEach(function(rate) {
             var rateNum = parseFloat(rate);
-            totalTax += taxByRate[rate];
             if (rateNum === 0) {
               taxBreakdownHtml += '<div class="flex justify-between py-1 text-xs text-gray-500">' +
                 '<span>非課税</span><span>¥0</span></div>';
@@ -8095,6 +8237,20 @@ app.get('/estimates', async (c) => {
             // 現在の上代表記設定を取得
             var showRetail = document.querySelector('[name="show_retail"]:checked');
             var showRetailValue = showRetail ? showRetail.value === 'yes' : false;
+            var productCodeById = {};
+            (products || []).forEach(function(p) {
+              if (!p || p.id === null || p.id === undefined) return;
+              productCodeById[String(p.id)] = p.product_code || '';
+            });
+            var enrichedItems = (estimateData.items || []).map(function(item) {
+              if (!item) return item;
+              var productIdKey = item.product_id === null || item.product_id === undefined ? '' : String(item.product_id);
+              return {
+                ...item,
+                product_code: item.product_code || (productIdKey ? (productCodeById[productIdKey] || '') : ''),
+                jan_code: item.jan_code || ''
+              };
+            });
             
             // PDFデータを構築
             var pdfData = {
@@ -8103,7 +8259,7 @@ app.get('/estimates', async (c) => {
               valid_until: estimateData.valid_until,
               client_name: estimateData.client_name,
               subject: estimateData.subject,
-              items: estimateData.items || [],
+              items: enrichedItems,
               subtotal: estimateData.subtotal,
               tax_amount: estimateData.tax_amount,
               total_amount: estimateData.total_amount,
@@ -8672,7 +8828,13 @@ app.get('/invoices', async (c) => {
                 </div>
 
                 {/* 合計金額 */}
-                <div class="flex justify-end mb-6">
+                <div class="flex justify-between items-start mb-6">
+                  <div class="pt-2">
+                    <button type="button" id="openTaxAdjustmentModalBtn" class="bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 px-3 py-1.5 rounded-lg text-sm font-medium">
+                      <i class="fas fa-sliders-h mr-1"></i>消費税修正
+                    </button>
+                    <p id="taxAdjustmentReasonHint" class="text-xs text-gray-500 mt-2 hidden"></p>
+                  </div>
                   <div class="w-72 bg-gray-50 rounded-lg p-4">
                     <div class="flex justify-between py-2 border-b">
                       <span class="text-gray-600">小計</span>
@@ -8684,12 +8846,19 @@ app.get('/invoices', async (c) => {
                       <span class="text-gray-600">消費税</span>
                       <span id="taxDisplay" class="font-bold">¥0</span>
                     </div>
+                    <div class="flex justify-between items-center py-2 border-b">
+                      <span class="text-gray-600">税調整（請求書のみ）</span>
+                      <span id="taxAdjustmentDisplay" class="text-sm text-gray-600 w-24 text-right">¥0</span>
+                    </div>
                     <div class="flex justify-between py-3 text-lg">
                       <span class="font-bold text-gray-800">合計</span>
                       <span id="totalDisplay" class="font-bold text-indigo-600">¥0</span>
                     </div>
                   </div>
                 </div>
+                <input type="hidden" name="tax_adjustment" id="taxAdjustmentInput" value="0" />
+                <input type="hidden" name="tax_adjustment_reason" id="taxAdjustmentReasonInput" value="" />
+                <input type="hidden" name="tax_adjustment_by_rate" id="taxAdjustmentByRateInput" value="{}" />
 
                 {/* 振込先 */}
                 <div class="mb-6 p-4 bg-blue-50 rounded-lg">
@@ -8877,6 +9046,48 @@ app.get('/invoices', async (c) => {
           </div>
         </div>
       </div>
+
+      {/* 消費税修正モーダル（請求書のみ） */}
+      <div id="taxAdjustmentModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden">
+          <div class="p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50 flex items-center justify-between">
+            <h3 class="font-bold text-gray-800 text-lg"><i class="fas fa-sliders-h mr-2 text-indigo-600"></i>消費税修正</h3>
+            <button type="button" id="closeTaxAdjustmentModal" class="text-gray-500 hover:text-gray-700">
+              <i class="fas fa-times text-xl"></i>
+            </button>
+          </div>
+          <div class="p-4 space-y-3">
+            <div class="flex items-center justify-between text-sm">
+              <span class="text-gray-600">自動計算の税合計</span>
+              <span id="taxAdjustmentBaseTaxDisplay" class="font-bold text-gray-800">¥0</span>
+            </div>
+            <div id="taxAdjustmentBreakdown" class="bg-gray-50 rounded p-2 text-xs text-gray-600"></div>
+            <div>
+              <label for="taxAdjustmentRateModalSelect" class="block text-sm font-medium text-gray-700 mb-1">調整対象税率</label>
+              <select id="taxAdjustmentRateModalSelect" class="w-full border rounded-lg px-3 py-2">
+                <option value="10">10%</option>
+              </select>
+            </div>
+            <div>
+              <label for="taxAdjustmentModalInput" class="block text-sm font-medium text-gray-700 mb-1">税調整額（±）</label>
+              <input type="number" step="1" id="taxAdjustmentModalInput" value="0" class="w-full border rounded-lg px-3 py-2 text-right" />
+            </div>
+            <div class="flex items-center justify-between text-sm">
+              <span class="text-gray-600">調整後の税合計</span>
+              <span id="taxAdjustmentAdjustedTaxDisplay" class="font-bold text-indigo-700">¥0</span>
+            </div>
+            <div>
+              <label for="taxAdjustmentReasonModalInput" class="block text-sm font-medium text-gray-700 mb-1">理由メモ *</label>
+              <textarea id="taxAdjustmentReasonModalInput" rows={3} class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500" placeholder="税調整の理由を入力してください"></textarea>
+            </div>
+            <div id="taxAdjustmentModalError" class="hidden text-sm text-red-600 font-medium"></div>
+          </div>
+          <div class="p-4 border-t bg-gray-50 flex justify-end gap-2">
+            <button type="button" id="cancelTaxAdjustmentBtn" class="px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-700">キャンセル</button>
+            <button type="button" id="saveTaxAdjustmentBtn" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold">保存</button>
+          </div>
+        </div>
+      </div>
       
       {/* 納品書詳細モーダル（1社分） */}
       <div id="deliveryDetailModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center">
@@ -8922,6 +9133,7 @@ app.get('/invoices', async (c) => {
         ${docHeaderTitleHelpers}
         ${bankAccountTypeHelpers}
         ${taxRateHelpers}
+        ${taxCalculationHelpers}
         ${recentAccordionScript}
         // 状態管理
         var currentInvoiceId = null;
@@ -8939,7 +9151,11 @@ app.get('/invoices', async (c) => {
         var BANK_ACCOUNT_SELECT_MAX = 3;
         var bankAccountLimitNoteMode = '';
         var companyDefaults = { closing_day: '', payment_day: '' };
+        var companyTaxSettings = { tax_rounding_unit: 'PER_LINE', tax_rounding_mode: 'FLOOR', tax_rate_column_mode: 'AUTO' };
         var selectedDeliveryIds = [];
+        var latestInvoiceTaxSummary = { subtotal: 0, tax_by_rate: {}, tax_amount: 0, total_amount: 0 };
+        var currentTaxAdjustmentByRate = {};
+        var currentTaxAdjustmentRate = '10';
         var lastSelectedClientId = localStorage.getItem('lastSelectedClientId');
         var currentHeaderMode = null;
         var currentHeaderIconHtml = '';
@@ -9531,6 +9747,11 @@ app.get('/invoices', async (c) => {
         async function loadCompanyBankAccounts() {
           var companyRes = await axios.get('/api/company');
           var company = companyRes.data;
+          companyTaxSettings = {
+            tax_rounding_unit: company && company.tax_rounding_unit ? company.tax_rounding_unit : 'PER_LINE',
+            tax_rounding_mode: company && company.tax_rounding_mode ? company.tax_rounding_mode : 'FLOOR',
+            tax_rate_column_mode: company && company.tax_rate_column_mode ? company.tax_rate_column_mode : 'AUTO'
+          };
           var bankList = [];
           try {
             var bankRes = await axios.get('/api/bank-accounts');
@@ -9871,7 +10092,22 @@ app.get('/invoices', async (c) => {
         }
         
         function renderItemsTable() {
+          var thead = document.getElementById('itemsTableHead');
           var tbody = document.getElementById('itemsTableBody');
+          var showTaxRateColumn = shouldShowTaxRateColumn(items, companyTaxSettings && companyTaxSettings.tax_rate_column_mode);
+
+          if (thead) {
+            thead.innerHTML = '<tr>' +
+              '<th class="px-2 py-2 text-left w-12" title="ドラッグで並び替え可能"><i class="fas fa-grip-vertical text-gray-400 mr-1"></i>#</th>' +
+              '<th class="px-2 py-2 text-left w-24">納品日</th>' +
+              '<th class="px-2 py-2 text-left min-w-48">品名</th>' +
+              '<th class="px-2 py-2 text-right w-28">単価</th>' +
+              '<th class="px-2 py-2 text-center w-20">数量</th>' +
+              (showTaxRateColumn ? '<th class="px-2 py-2 text-center w-20">税率</th>' : '') +
+              '<th class="px-2 py-2 text-right w-28">金額</th>' +
+              '<th class="px-2 py-2 w-10"></th>' +
+              '</tr>';
+          }
           
           tbody.innerHTML = items.map(function(item, index) {
             var amount = item.quantity * item.unit_price;
@@ -9892,13 +10128,15 @@ app.get('/invoices', async (c) => {
               '</div></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-unit-price w-full border rounded px-2 py-1 text-sm text-right" value="' + item.unit_price + '" /></td>' +
               '<td class="px-2 py-2"><input type="number" class="item-quantity w-full border rounded px-2 py-1 text-sm text-center" value="' + item.quantity + '" min="1" /></td>' +
-              '<td class="px-2 py-2">' +
-              '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
-              customRateOption +
-              '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
-              '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
-              '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
-              '</select></td>' +
+              (showTaxRateColumn
+                ? ('<td class="px-2 py-2">' +
+                  '<select class="item-tax-rate w-full border rounded px-1 py-1 text-sm">' +
+                  customRateOption +
+                  '<option value="10"' + (rateValue == 10 ? ' selected' : '') + '>10%</option>' +
+                  '<option value="8"' + (rateValue == 8 ? ' selected' : '') + '>8%</option>' +
+                  '<option value="0"' + (rateValue == 0 ? ' selected' : '') + '>0%</option>' +
+                  '</select></td>')
+                : '') +
               '<td class="px-2 py-2 text-right font-medium">¥' + amount.toLocaleString() + '</td>' +
               '<td class="px-2 py-2"><button type="button" class="remove-item-btn text-red-500 hover:text-red-700" data-index="' + index + '"><i class="fas fa-times"></i></button></td>' +
               '</tr>';
@@ -9961,39 +10199,240 @@ app.get('/invoices', async (c) => {
           });
         }
         
-        // 金額計算
-        function calculateTotals() {
-          var subtotal = 0;
-          var taxByRate = {};
-          
-          items.forEach(function(item) {
-            var amount = item.quantity * item.unit_price;
-            subtotal += amount;
-            
-            // 税率0%に対応：nullやundefinedの場合のみデフォルト10%
-            var rate = normalizeTaxRate(item.tax_rate, 10);
-            if (!taxByRate[rate]) taxByRate[rate] = 0;
-            taxByRate[rate] += Math.floor(amount * rate / 100);
+        function getCurrentTaxAdjustment() {
+          var adjustmentInput = document.getElementById('taxAdjustmentInput');
+          return adjustmentInput ? (parseFloat(adjustmentInput.value) || 0) : 0;
+        }
+
+        function normalizeTaxAdjustmentByRate(value) {
+          var source = value;
+          if (typeof source === 'string') {
+            try { source = JSON.parse(source); } catch (e) { source = null; }
+          }
+          if (!source || typeof source !== 'object') return {};
+          var normalized = {};
+          Object.keys(source).forEach(function(key) {
+            var rate = Number(key);
+            var amount = Number(source[key]);
+            if (!Number.isFinite(rate) || rate <= 0) return;
+            if (!Number.isFinite(amount)) return;
+            if (amount === 0) return;
+            normalized[String(rate)] = amount;
           });
-          
-          var totalTax = 0;
-          var taxBreakdownHtml = '';
-          Object.keys(taxByRate).sort(function(a, b) { return parseFloat(a) - parseFloat(b); }).forEach(function(rate) {
+          return normalized;
+        }
+
+        function sumTaxAdjustmentByRate(adjByRate) {
+          var sum = 0;
+          Object.keys(adjByRate || {}).forEach(function(key) {
+            var n = Number(adjByRate[key]);
+            if (Number.isFinite(n)) sum += n;
+          });
+          return sum;
+        }
+
+        function updateTaxAdjustmentByRateInput() {
+          var byRateInput = document.getElementById('taxAdjustmentByRateInput');
+          if (byRateInput) byRateInput.value = JSON.stringify(currentTaxAdjustmentByRate || {});
+        }
+
+        function getInvoiceTaxRateOptions() {
+          var rateMap = {};
+          (items || []).forEach(function(item) {
+            var rate = normalizeTaxRate(item && item.tax_rate, 10);
+            if (rate > 0) rateMap[String(rate)] = rate;
+          });
+          return Object.keys(rateMap)
+            .map(function(key) { return Number(key); })
+            .filter(function(rate) { return Number.isFinite(rate) && rate > 0; })
+            .sort(function(a, b) { return a - b; });
+        }
+
+        function syncCurrentTaxAdjustmentRate() {
+          var options = getInvoiceTaxRateOptions();
+          if (options.length === 0) {
+            currentTaxAdjustmentRate = '10';
+            return;
+          }
+          if (options.length === 1) {
+            currentTaxAdjustmentRate = String(options[0]);
+            return;
+          }
+          if (options.some(function(rate) { return String(rate) === currentTaxAdjustmentRate; })) return;
+          if (options.some(function(rate) { return rate === 10; })) {
+            currentTaxAdjustmentRate = '10';
+            return;
+          }
+          currentTaxAdjustmentRate = String(options[0]);
+        }
+
+        function renderTaxAdjustmentRateOptions() {
+          var select = document.getElementById('taxAdjustmentRateModalSelect');
+          if (!select) return;
+          var options = getInvoiceTaxRateOptions();
+          syncCurrentTaxAdjustmentRate();
+          if (options.length === 0) {
+            select.innerHTML = '<option value="">対象税率なし</option>';
+            select.value = '';
+            select.disabled = true;
+            return;
+          }
+          select.disabled = false;
+          select.innerHTML = options.map(function(rate) {
+            return '<option value="' + rate + '">' + rate + '%</option>';
+          }).join('');
+          if (!options.some(function(rate) { return String(rate) === currentTaxAdjustmentRate; })) {
+            currentTaxAdjustmentRate = String(options[0]);
+          }
+          select.value = currentTaxAdjustmentRate;
+        }
+
+        function getTaxAdjustmentForRate(rate) {
+          var key = String(rate || '');
+          var n = Number((currentTaxAdjustmentByRate || {})[key]);
+          return Number.isFinite(n) ? n : 0;
+        }
+
+        function formatSignedYen(value) {
+          var n = Number(value || 0);
+          if (n === 0) return '¥0';
+          var sign = n > 0 ? '+' : '';
+          return sign + '¥' + n.toLocaleString();
+        }
+
+        function buildTaxBreakdownHtml(taxByRate) {
+          var html = '';
+          Object.keys(taxByRate || {}).sort(function(a, b) { return parseFloat(a) - parseFloat(b); }).forEach(function(rate) {
             var rateNum = parseFloat(rate);
-            totalTax += taxByRate[rate];
             if (rateNum === 0) {
-              taxBreakdownHtml += '<div class="flex justify-between py-1 text-xs text-gray-500">' +
-                '<span>非課税</span><span>¥0</span></div>';
+              html += '<div class="flex justify-between py-1 text-xs text-gray-500"><span>非課税</span><span>¥0</span></div>';
             } else {
-              taxBreakdownHtml += '<div class="flex justify-between py-1 text-xs text-gray-500">' +
-                '<span>消費税(' + rateNum + '%)</span><span>¥' + taxByRate[rate].toLocaleString() + '</span></div>';
+              html += '<div class="flex justify-between py-1 text-xs text-gray-500"><span>消費税(' + rateNum + '%)</span><span>¥' + Number(taxByRate[rate] || 0).toLocaleString() + '</span></div>';
             }
           });
+          return html;
+        }
+
+        function renderTaxAdjustmentReasonHint() {
+          var reasonInput = document.getElementById('taxAdjustmentReasonInput');
+          var hint = document.getElementById('taxAdjustmentReasonHint');
+          if (!reasonInput || !hint) return;
+          var reason = String(reasonInput.value || '').trim();
+          if (!reason) {
+            hint.textContent = '';
+            hint.classList.add('hidden');
+            return;
+          }
+          hint.textContent = '理由: ' + reason;
+          hint.classList.remove('hidden');
+        }
+
+        // 金額計算
+        function calculateTotals() {
+          var taxSummary = calculateTaxSummary(items, {
+            tax_rounding_unit: companyTaxSettings && companyTaxSettings.tax_rounding_unit,
+            tax_rounding_mode: companyTaxSettings && companyTaxSettings.tax_rounding_mode,
+            default_tax_rate: 10
+          });
+          latestInvoiceTaxSummary = taxSummary || { subtotal: 0, tax_by_rate: {}, tax_amount: 0, total_amount: 0 };
+          var subtotal = Number(latestInvoiceTaxSummary.subtotal || 0);
+          var taxByRate = latestInvoiceTaxSummary.tax_by_rate || {};
+          var baseTax = Number(latestInvoiceTaxSummary.tax_amount || 0);
+          var taxAdjustment = getCurrentTaxAdjustment();
+          var totalTax = baseTax + taxAdjustment;
+          var taxAdjustmentDisplay = document.getElementById('taxAdjustmentDisplay');
+          if (taxAdjustmentDisplay) {
+            taxAdjustmentDisplay.textContent = formatSignedYen(taxAdjustment);
+          }
           
           document.getElementById('subtotalDisplay').textContent = '¥' + subtotal.toLocaleString();
-          document.getElementById('taxBreakdown').innerHTML = taxBreakdownHtml;
+          document.getElementById('taxBreakdown').innerHTML = buildTaxBreakdownHtml(taxByRate);
           document.getElementById('taxDisplay').textContent = '¥' + totalTax.toLocaleString();
           document.getElementById('totalDisplay').textContent = '¥' + (subtotal + totalTax).toLocaleString();
+          renderTaxAdjustmentReasonHint();
+        }
+
+        function updateTaxAdjustmentModalDisplay() {
+          var taxByRate = (latestInvoiceTaxSummary && latestInvoiceTaxSummary.tax_by_rate) || {};
+          var selectedRate = currentTaxAdjustmentRate;
+          var modalInput = document.getElementById('taxAdjustmentModalInput');
+          var adjustment = modalInput ? (parseFloat(modalInput.value) || 0) : 0;
+          var adjustedTaxTotal = 0;
+          Object.keys(taxByRate || {}).forEach(function(rateKey) {
+            var rateNum = Number(rateKey);
+            if (!Number.isFinite(rateNum) || rateNum <= 0) return;
+            var base = Number(taxByRate[rateKey] || 0);
+            if (!Number.isFinite(base)) base = 0;
+            var adj = getTaxAdjustmentForRate(rateKey);
+            if (String(rateKey) === String(selectedRate)) adj = adjustment;
+            adjustedTaxTotal += base + adj;
+          });
+          document.getElementById('taxAdjustmentAdjustedTaxDisplay').textContent = '¥' + adjustedTaxTotal.toLocaleString();
+        }
+
+        function openTaxAdjustmentModal() {
+          var taxSummary = latestInvoiceTaxSummary || calculateTaxSummary(items, {
+            tax_rounding_unit: companyTaxSettings && companyTaxSettings.tax_rounding_unit,
+            tax_rounding_mode: companyTaxSettings && companyTaxSettings.tax_rounding_mode,
+            default_tax_rate: 10
+          });
+          latestInvoiceTaxSummary = taxSummary || { subtotal: 0, tax_by_rate: {}, tax_amount: 0, total_amount: 0 };
+          var baseTax = Number((latestInvoiceTaxSummary && latestInvoiceTaxSummary.tax_amount) || 0);
+
+          document.getElementById('taxAdjustmentBaseTaxDisplay').textContent = '¥' + baseTax.toLocaleString();
+          document.getElementById('taxAdjustmentBreakdown').innerHTML = buildTaxBreakdownHtml(latestInvoiceTaxSummary.tax_by_rate || {});
+          renderTaxAdjustmentRateOptions();
+
+          var hiddenAdjustmentInput = document.getElementById('taxAdjustmentInput');
+          var hiddenReasonInput = document.getElementById('taxAdjustmentReasonInput');
+          var modalAdjustmentInput = document.getElementById('taxAdjustmentModalInput');
+          var modalReasonInput = document.getElementById('taxAdjustmentReasonModalInput');
+          if (modalAdjustmentInput) modalAdjustmentInput.value = String(getTaxAdjustmentForRate(currentTaxAdjustmentRate));
+          if (modalReasonInput) modalReasonInput.value = hiddenReasonInput ? String(hiddenReasonInput.value || '') : '';
+
+          document.getElementById('taxAdjustmentModalError').classList.add('hidden');
+          updateTaxAdjustmentModalDisplay();
+          document.getElementById('taxAdjustmentModal').classList.remove('hidden');
+        }
+
+        function closeTaxAdjustmentModal() {
+          document.getElementById('taxAdjustmentModal').classList.add('hidden');
+          document.getElementById('taxAdjustmentModalError').classList.add('hidden');
+        }
+
+        function saveTaxAdjustmentFromModal() {
+          var modalAdjustmentInput = document.getElementById('taxAdjustmentModalInput');
+          var modalReasonInput = document.getElementById('taxAdjustmentReasonModalInput');
+          var errorEl = document.getElementById('taxAdjustmentModalError');
+          var hiddenAdjustmentInput = document.getElementById('taxAdjustmentInput');
+          var hiddenReasonInput = document.getElementById('taxAdjustmentReasonInput');
+          var rateSelect = document.getElementById('taxAdjustmentRateModalSelect');
+          var adjustment = modalAdjustmentInput ? (parseFloat(modalAdjustmentInput.value) || 0) : 0;
+          var reason = modalReasonInput ? String(modalReasonInput.value || '').trim() : '';
+          var selectedRate = rateSelect ? String(rateSelect.value || '').trim() : '';
+
+          if (!selectedRate) {
+            errorEl.textContent = '調整対象税率を選択してください。';
+            errorEl.classList.remove('hidden');
+            return;
+          }
+
+          if (!reason) {
+            errorEl.textContent = '理由メモは必須です。';
+            errorEl.classList.remove('hidden');
+            return;
+          }
+
+          currentTaxAdjustmentRate = selectedRate;
+          // 置換仕様: 選択税率1本のみを保持（0 の場合は調整なし {}）
+          currentTaxAdjustmentByRate = {};
+          if (adjustment !== 0) currentTaxAdjustmentByRate[selectedRate] = Number(adjustment);
+          updateTaxAdjustmentByRateInput();
+          if (hiddenAdjustmentInput) hiddenAdjustmentInput.value = String(sumTaxAdjustmentByRate(currentTaxAdjustmentByRate));
+          if (hiddenReasonInput) hiddenReasonInput.value = reason;
+          formChanged = true; if (window.SmartBill) window.SmartBill.formChanged = true;
+          calculateTotals();
+          closeTaxAdjustmentModal();
         }
 
         // 商品モーダル（請求データ入力）
@@ -10102,6 +10541,13 @@ app.get('/invoices', async (c) => {
           if (sentAtTextEl) sentAtTextEl.textContent = '—';
           if (sentToEmailEl) sentToEmailEl.classList.add('hidden');
           selectedBankAccountIds = [];
+          var taxAdjustmentInput = document.getElementById('taxAdjustmentInput');
+          if (taxAdjustmentInput) taxAdjustmentInput.value = '0';
+          var taxAdjustmentReasonInput = document.getElementById('taxAdjustmentReasonInput');
+          if (taxAdjustmentReasonInput) taxAdjustmentReasonInput.value = '';
+          currentTaxAdjustmentByRate = {};
+          currentTaxAdjustmentRate = '10';
+          updateTaxAdjustmentByRateInput();
           clearBankAccountLimitNote();
           updateBankAccountCheckboxState();
           updateBankAccountPreview();
@@ -10186,6 +10632,25 @@ app.get('/invoices', async (c) => {
               tax_rate: normalizeTaxRate(item.tax_rate, 10)
             };
           });
+          var currentTaxSummary = calculateTaxSummary(items, {
+            tax_rounding_unit: companyTaxSettings && companyTaxSettings.tax_rounding_unit,
+            tax_rounding_mode: companyTaxSettings && companyTaxSettings.tax_rounding_mode,
+            default_tax_rate: 10
+          });
+          var loadedTaxAdjustment = Number(data.tax_adjustment);
+          currentTaxAdjustmentByRate = normalizeTaxAdjustmentByRate(data.tax_adjustment_by_rate);
+          updateTaxAdjustmentByRateInput();
+          syncCurrentTaxAdjustmentRate();
+          var loadedByRateTotal = sumTaxAdjustmentByRate(currentTaxAdjustmentByRate);
+          var hasByRate = Object.keys(currentTaxAdjustmentByRate).length > 0;
+          var derivedTaxAdjustment = Number.isFinite(loadedTaxAdjustment)
+            ? loadedTaxAdjustment
+            : (Number(data.tax_amount || 0) - Number(currentTaxSummary.tax_amount || 0));
+          if (hasByRate) derivedTaxAdjustment = loadedByRateTotal;
+          var taxAdjustmentInput = document.getElementById('taxAdjustmentInput');
+          if (taxAdjustmentInput) taxAdjustmentInput.value = String(derivedTaxAdjustment);
+          var taxAdjustmentReasonInput = document.getElementById('taxAdjustmentReasonInput');
+          if (taxAdjustmentReasonInput) taxAdjustmentReasonInput.value = String(data.tax_adjustment_reason || '').trim();
           
           if (items.length === 0) addItemRow();
           
@@ -10265,6 +10730,17 @@ app.get('/invoices', async (c) => {
           }
           
           var formData = new FormData(form);
+          var selectedRateForPayload = String(currentTaxAdjustmentRate || '').trim();
+          var selectedAdjustmentForPayload = Number(getTaxAdjustmentForRate(selectedRateForPayload) || 0);
+          var taxAdjustmentByRatePayload = {};
+          if (
+            selectedRateForPayload &&
+            Number.isFinite(Number(selectedRateForPayload)) &&
+            Number(selectedRateForPayload) > 0 &&
+            selectedAdjustmentForPayload !== 0
+          ) {
+            taxAdjustmentByRatePayload[String(selectedRateForPayload)] = Number(selectedAdjustmentForPayload);
+          }
           var data = {
             invoice_no: formData.get('invoice_no'),
             invoice_date: formData.get('invoice_date'),
@@ -10274,11 +10750,19 @@ app.get('/invoices', async (c) => {
             billing_period_start: formData.get('billing_period_start') || null,
             billing_period_end: formData.get('billing_period_end') || null,
             notes: formData.get('notes') || '',
+            tax_adjustment: sumTaxAdjustmentByRate(taxAdjustmentByRatePayload),
+            tax_adjustment_reason: String(formData.get('tax_adjustment_reason') || '').trim(),
+            tax_adjustment_by_rate: taxAdjustmentByRatePayload,
             bank_info: formData.get('bank_info') || '',
             bank_account_ids: normalizeBankAccountIds(selectedBankAccountIds),
             items: validItems,
             delivery_ids: selectedDeliveryIds
           };
+          var hasTaxAdjByRate = Object.keys(data.tax_adjustment_by_rate || {}).length > 0;
+          if ((Number(data.tax_adjustment || 0) !== 0 || hasTaxAdjByRate) && !String(data.tax_adjustment_reason || '').trim()) {
+            window.SmartBill.showErrorDialog('税調整を保存するには理由メモが必要です。「消費税修正」から入力してください。');
+            return;
+          }
           
           try {
             if (currentInvoiceId) {
@@ -10390,6 +10874,8 @@ app.get('/invoices', async (c) => {
             var pdfData = {
               invoice_no: invoiceData.invoice_no,
               invoice_date: invoiceData.invoice_date,
+              billing_period_start: invoiceData.billing_period_start,
+              billing_period_end: invoiceData.billing_period_end,
               payment_due_date: invoiceData.payment_due_date,
               client_name: invoiceData.client_name,
               subject: invoiceData.subject,
@@ -10397,6 +10883,9 @@ app.get('/invoices', async (c) => {
               subtotal: invoiceData.subtotal,
               tax_amount: invoiceData.tax_amount,
               total_amount: invoiceData.total_amount,
+              tax_adjustment: invoiceData.tax_adjustment,
+              tax_adjustment_reason: invoiceData.tax_adjustment_reason,
+              tax_adjustment_by_rate: invoiceData.tax_adjustment_by_rate,
               notes: invoiceData.notes,
               companyInfo: companyInfo,
               bankInfo: bankInfo,
@@ -10924,6 +11413,16 @@ app.get('/invoices', async (c) => {
           document.getElementById('duplicateInvoiceBtn').addEventListener('click', duplicateInvoice);
           document.getElementById('pdfInvoiceBtn').addEventListener('click', exportInvoicePDF);
           document.getElementById('sendToClientBtn').addEventListener('click', openSendToClientModal);
+          document.getElementById('openTaxAdjustmentModalBtn').addEventListener('click', openTaxAdjustmentModal);
+          document.getElementById('closeTaxAdjustmentModal').addEventListener('click', closeTaxAdjustmentModal);
+          document.getElementById('cancelTaxAdjustmentBtn').addEventListener('click', closeTaxAdjustmentModal);
+          document.getElementById('saveTaxAdjustmentBtn').addEventListener('click', saveTaxAdjustmentFromModal);
+          document.getElementById('taxAdjustmentModalInput').addEventListener('input', updateTaxAdjustmentModalDisplay);
+          document.getElementById('taxAdjustmentRateModalSelect').addEventListener('change', function() {
+            currentTaxAdjustmentRate = String(this.value || '');
+            document.getElementById('taxAdjustmentModalInput').value = String(getTaxAdjustmentForRate(currentTaxAdjustmentRate));
+            updateTaxAdjustmentModalDisplay();
+          });
           document.getElementById('closeSendToClientModal').addEventListener('click', closeSendToClientModal);
           document.getElementById('executeSendToClientBtn').addEventListener('click', async function() {
             if (!Number.isFinite(Number(currentInvoiceId)) || Number(currentInvoiceId) <= 0) {
@@ -11008,6 +11507,9 @@ app.get('/invoices', async (c) => {
           });
           document.getElementById('sendToClientModal').addEventListener('click', function(e) {
             if (e.target === this) closeSendToClientModal();
+          });
+          document.getElementById('taxAdjustmentModal').addEventListener('click', function(e) {
+            if (e.target === this) closeTaxAdjustmentModal();
           });
           document.querySelector('[name="invoice_no"]').addEventListener('input', function() {
             updateFormHeaderTitle();
@@ -11117,10 +11619,13 @@ app.get('/invoices', async (c) => {
                 closeProductModal();
                 return;
               }
+              var taxAdjustmentModal = document.getElementById('taxAdjustmentModal');
               var sendToClientModal = document.getElementById('sendToClientModal');
               var deliveryDetailModal = document.getElementById('deliveryDetailModal');
               var batchModal = document.getElementById('batchCreateModal');
-              if (!sendToClientModal.classList.contains('hidden')) {
+              if (!taxAdjustmentModal.classList.contains('hidden')) {
+                closeTaxAdjustmentModal();
+              } else if (!sendToClientModal.classList.contains('hidden')) {
                 closeSendToClientModal();
               } else if (!deliveryDetailModal.classList.contains('hidden')) {
                 closeDeliveryDetailModal();

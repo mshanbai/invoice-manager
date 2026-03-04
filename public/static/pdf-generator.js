@@ -38,6 +38,34 @@
     if (parts.length !== 3) return '';
     return parts[0] + parts[1].padStart(2, '0') + parts[2].padStart(2, '0');
   }
+
+  function sanitizeFileName(name) {
+    return (name || '取引先').replace(/[\\/:*?"<>|]/g, '_');
+  }
+
+  function extractYYYYMM(value) {
+    if (!value) return '';
+    var normalized = String(value).slice(0, 10).replace(/-/g, '');
+    var match = normalized.match(/^(\d{6})\d{0,2}$/);
+    return match ? match[1] : '';
+  }
+
+  function getInvoiceYm(data) {
+    if (!data || typeof data !== 'object') return '';
+
+    var billingPeriodEndYm = extractYYYYMM(data.billing_period_end);
+    if (billingPeriodEndYm) return billingPeriodEndYm;
+
+    var billingPeriodStartYm = extractYYYYMM(data.billing_period_start);
+    if (billingPeriodStartYm) return billingPeriodStartYm;
+
+    if (data.invoice_no) {
+      var invoiceNoMatch = String(data.invoice_no).match(/^INV(\d{6})-/);
+      if (invoiceNoMatch) return invoiceNoMatch[1];
+    }
+
+    return extractYYYYMM(data.invoice_date);
+  }
   
   function normalizeTaxRate(rateLike) {
     if (rateLike === null || rateLike === undefined) return 0;
@@ -50,7 +78,91 @@
     return Number.isFinite(n) ? n : 0;
   }
 
-  function calculateTaxBreakdown(items) {
+  function normalizeTaxRateColumnMode(modeLike) {
+    var mode = String(modeLike || '').trim().toUpperCase();
+    if (mode === 'ON') return 'ON';
+    if (mode === 'OFF') return 'OFF';
+    return 'AUTO';
+  }
+
+  function shouldShowTaxRateColumn(items, modeLike) {
+    var mode = normalizeTaxRateColumnMode(modeLike);
+    if (mode === 'ON') return true;
+    if (mode === 'OFF') return false;
+    var list = Array.isArray(items) ? items : [];
+    var rates = {};
+    for (var i = 0; i < list.length; i++) {
+      var rate = normalizeTaxRate(list[i] && list[i].tax_rate);
+      rates[String(rate)] = true;
+      if (Object.keys(rates).length >= 2) return true;
+    }
+    return false;
+  }
+
+  function resolveEstimateCodeColumnOptions(companyInfo) {
+    var enabled = Number(companyInfo && companyInfo.estimate_code_column_enabled) === 1;
+    var kind = String((companyInfo && companyInfo.estimate_code_column_kind) || 'JAN').trim().toUpperCase();
+    if (kind !== 'PRODUCT_CODE') kind = 'JAN';
+    return {
+      enabled: enabled,
+      kind: kind,
+      label: kind === 'PRODUCT_CODE' ? '商品番号' : 'JAN'
+    };
+  }
+
+  function resolveEstimateCodeValue(item, kind) {
+    if (kind === 'PRODUCT_CODE') return String((item && item.product_code) || '');
+    return String((item && item.jan_code) || '');
+  }
+
+  function calculateTaxBreakdown(items, companyInfo) {
+    var list = Array.isArray(items) ? items : [];
+    var settings = companyInfo || {};
+    var commonCalculator = (typeof window !== 'undefined' && window && typeof window.calculateTaxSummary === 'function')
+      ? window.calculateTaxSummary
+      : null;
+
+    if (commonCalculator) {
+      var summary = commonCalculator(list, {
+        tax_rounding_unit: settings.tax_rounding_unit,
+        tax_rounding_mode: settings.tax_rounding_mode,
+        default_tax_rate: settings.default_tax_rate
+      }) || {};
+      var summarySubtotal = Number(summary.subtotal || 0);
+      var summaryTaxByRate = summary.tax_by_rate || {};
+      var summaryTaxByRateRows = Object.keys(summaryTaxByRate)
+        .map(function(rateKey) {
+          var rate = Number(rateKey);
+          var tax = Number(summaryTaxByRate[rateKey] || 0);
+          var base = rate === 0 ? 0 : Math.round((tax * 100) / rate);
+          return {
+            rate: rate,
+            base: base,
+            tax: tax
+          };
+        })
+        .sort(function(a, b) { return b.rate - a.rate; });
+
+      var summaryTax10 = summaryTaxByRateRows.find(function(row) { return row.rate === 10; }) || { tax: 0, base: 0 };
+      var summaryTax8 = summaryTaxByRateRows.find(function(row) { return row.rate === 8; }) || { tax: 0, base: 0 };
+      var summaryTax0 = summaryTaxByRateRows.find(function(row) { return row.rate === 0; }) || { tax: 0, base: 0 };
+      var summaryTotalTax = Number(summary.tax_amount || 0);
+
+      return {
+        subtotal: summarySubtotal,
+        subtotal10: summaryTax10.base,
+        subtotal8: summaryTax8.base,
+        subtotal0: summaryTax0.base,
+        tax10Amount: summaryTax10.tax,
+        tax8Amount: summaryTax8.tax,
+        hasTax8: summaryTax8.base > 0,
+        hasTax0: summaryTax0.base > 0,
+        taxByRate: summaryTaxByRateRows,
+        totalTax: summaryTotalTax,
+        total: summarySubtotal + summaryTotalTax
+      };
+    }
+
     var baseByRate = {};
     var subtotal = 0;
     
@@ -184,12 +296,13 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
 ';
   }
   
-  function generateInvoiceItemsTableHTML(items, minRows) {
+  function generateInvoiceItemsTableHTML(items, minRows, showTaxRateColumn) {
     var targetRows = items.length >= 12 ? items.length : (items.length >= 8 ? Math.max(items.length, 10) : Math.max(items.length + 2, minRows || 6));
     var has8Percent = items.some(function(item) { return item.tax_rate === 8; });
     
     var html = '<table class="items-table"><thead><tr>';
-    html += '<th class="col-date">日付</th><th class="col-name">品目</th><th class="col-qty">数量</th><th class="col-price">単価</th><th class="col-amount">金額</th><th class="col-tax">税</th>';
+    html += '<th class="col-date">日付</th><th class="col-name">品目</th><th class="col-qty">数量</th><th class="col-price">単価</th><th class="col-amount">金額</th>';
+    if (showTaxRateColumn) html += '<th class="col-tax">税</th>';
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < items.length; i++) {
@@ -206,30 +319,42 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       html += '<td class="col-qty">' + formatNumber(item.quantity) + '</td>';
       html += '<td class="col-price">&yen;' + formatNumber(item.unit_price) + '</td>';
       html += '<td class="col-amount">&yen;' + formatNumber(amount) + '</td>';
-      html += '<td class="col-tax">' + taxDisplay + '</td>';
+      if (showTaxRateColumn) html += '<td class="col-tax">' + taxDisplay + '</td>';
       html += '</tr>';
     }
     
     var blankRows = Math.max(0, targetRows - items.length);
     for (var j = 0; j < blankRows; j++) {
-      html += '<tr><td class="col-date">&nbsp;</td><td class="col-name">&nbsp;</td><td class="col-qty">&nbsp;</td><td class="col-price">&nbsp;</td><td class="col-amount">&nbsp;</td><td class="col-tax">&nbsp;</td></tr>';
+      html += '<tr><td class="col-date">&nbsp;</td><td class="col-name">&nbsp;</td><td class="col-qty">&nbsp;</td><td class="col-price">&nbsp;</td><td class="col-amount">&nbsp;</td>';
+      if (showTaxRateColumn) html += '<td class="col-tax">&nbsp;</td>';
+      html += '</tr>';
     }
     
     html += '</tbody></table>';
     return { html: html, has8Percent: has8Percent };
   }
   
-  // 税列なしテーブル（見積書・納品書用） - 備考列追加
-  function generateSimpleItemsTableHTML(items, minRows, showRetail) {
+  // 見積書・納品書用テーブル
+  function generateSimpleItemsTableHTML(items, minRows, showRetail, options) {
+    options = options || {};
+    var showTaxRateColumn = !!options.showTaxRateColumn;
+    var estimateCodeColumn = options.estimateCodeColumn || { enabled: false, kind: 'JAN', label: 'JAN' };
+    var showEstimateCodeColumn = !!estimateCodeColumn.enabled;
     var actualMinRows = items.length >= 10 ? items.length : Math.min(minRows || 10, 15 - items.length);
     
     var html = '<table class="items-table"><thead><tr>';
     if (showRetail) {
-      // 上代・下代表示あり
-      html += '<th style="width:5%">No</th><th style="width:32%">品名・摘要</th><th style="width:8%">数量</th><th style="width:12%">上代</th><th style="width:12%">下代</th><th style="width:14%">金額</th><th style="width:17%">備考</th>';
+      html += '<th style="width:5%">No</th><th style="width:28%">品名・摘要</th>';
+      if (showEstimateCodeColumn) html += '<th style="width:11%">' + escapeHtml(estimateCodeColumn.label) + '</th>';
+      html += '<th style="width:8%">数量</th><th style="width:11%">上代</th><th style="width:11%">下代</th>';
+      if (showTaxRateColumn) html += '<th style="width:8%">税率</th>';
+      html += '<th style="width:13%">金額</th><th style="width:14%">備考</th>';
     } else {
-      // 通常表示（単価・金額・備考）
-      html += '<th style="width:6%">No</th><th style="width:40%">品名・摘要</th><th style="width:10%">数量</th><th style="width:12%">単価</th><th style="width:14%">金額</th><th style="width:18%">備考</th>';
+      html += '<th style="width:6%">No</th><th style="width:34%">品名・摘要</th>';
+      if (showEstimateCodeColumn) html += '<th style="width:12%">' + escapeHtml(estimateCodeColumn.label) + '</th>';
+      html += '<th style="width:10%">数量</th><th style="width:12%">単価</th>';
+      if (showTaxRateColumn) html += '<th style="width:8%">税率</th>';
+      html += '<th style="width:14%">金額</th><th style="width:14%">備考</th>';
     }
     html += '</tr></thead><tbody>';
     
@@ -241,25 +366,34 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
       if (item.item_notes) {
         productCell += '<br><span style="font-size:8pt;color:#666;">' + escapeHtml(item.item_notes) + '</span>';
       }
-      // 備考列（notes）
+      var codeValue = showEstimateCodeColumn ? escapeHtml(resolveEstimateCodeValue(item, estimateCodeColumn.kind)) : '';
+      var taxDisplay = normalizeTaxRate(item.tax_rate);
       var notesCell = escapeHtml(item.notes || '');
       
       if (showRetail) {
-        // 上代・下代表示
         var retailPrice = item.retail_price || 0;
-        html += '<tr><td style="text-align:center;vertical-align:top">' + (i + 1) + '</td><td style="vertical-align:top">' + productCell + '</td><td style="text-align:center;vertical-align:top">' + formatNumber(item.quantity) + '</td><td style="text-align:right;vertical-align:top">' + (retailPrice > 0 ? '&yen;' + formatNumber(retailPrice) : '-') + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(item.unit_price) + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(amount) + '</td><td style="vertical-align:top;font-size:8pt;">' + notesCell + '</td></tr>';
+        html += '<tr><td style="text-align:center;vertical-align:top">' + (i + 1) + '</td><td style="vertical-align:top">' + productCell + '</td>';
+        if (showEstimateCodeColumn) html += '<td style="text-align:left;vertical-align:top">' + codeValue + '</td>';
+        html += '<td style="text-align:center;vertical-align:top">' + formatNumber(item.quantity) + '</td><td style="text-align:right;vertical-align:top">' + (retailPrice > 0 ? '&yen;' + formatNumber(retailPrice) : '-') + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(item.unit_price) + '</td>';
+        if (showTaxRateColumn) html += '<td style="text-align:center;vertical-align:top">' + taxDisplay + '%</td>';
+        html += '<td style="text-align:right;vertical-align:top">&yen;' + formatNumber(amount) + '</td><td style="vertical-align:top;font-size:8pt;">' + notesCell + '</td></tr>';
       } else {
-        html += '<tr><td style="text-align:center;vertical-align:top">' + (i + 1) + '</td><td style="vertical-align:top">' + productCell + '</td><td style="text-align:center;vertical-align:top">' + formatNumber(item.quantity) + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(item.unit_price) + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(amount) + '</td><td style="vertical-align:top;font-size:8pt;">' + notesCell + '</td></tr>';
+        html += '<tr><td style="text-align:center;vertical-align:top">' + (i + 1) + '</td><td style="vertical-align:top">' + productCell + '</td>';
+        if (showEstimateCodeColumn) html += '<td style="text-align:left;vertical-align:top">' + codeValue + '</td>';
+        html += '<td style="text-align:center;vertical-align:top">' + formatNumber(item.quantity) + '</td><td style="text-align:right;vertical-align:top">&yen;' + formatNumber(item.unit_price) + '</td>';
+        if (showTaxRateColumn) html += '<td style="text-align:center;vertical-align:top">' + taxDisplay + '%</td>';
+        html += '<td style="text-align:right;vertical-align:top">&yen;' + formatNumber(amount) + '</td><td style="vertical-align:top;font-size:8pt;">' + notesCell + '</td></tr>';
       }
     }
     
     var blankRows = Math.max(0, actualMinRows - items.length);
     for (var j = 0; j < blankRows; j++) {
-      if (showRetail) {
-        html += '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>';
-      } else {
-        html += '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>';
-      }
+      html += '<tr><td>&nbsp;</td><td>&nbsp;</td>';
+      if (showEstimateCodeColumn) html += '<td>&nbsp;</td>';
+      html += '<td>&nbsp;</td><td>&nbsp;</td>';
+      if (showRetail) html += '<td>&nbsp;</td>';
+      if (showTaxRateColumn) html += '<td>&nbsp;</td>';
+      html += '<td>&nbsp;</td><td>&nbsp;</td></tr>';
     }
     
     html += '</tbody></table>';
@@ -434,19 +568,64 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     var bankHtml = buildInvoiceBankBlockHtml(bankInfo, data.bankInfoList);
     
-    var itemsResult = generateInvoiceItemsTableHTML(data.items || [], 6);
-    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var showTaxRateColumn = shouldShowTaxRateColumn(data.items || [], companyInfo.tax_rate_column_mode);
+    var itemsResult = generateInvoiceItemsTableHTML(data.items || [], 6, showTaxRateColumn);
+    var taxBreakdown = calculateTaxBreakdown(data.items || [], companyInfo);
     
-    // 常にtaxBreakdownの計算結果を使用
-    var summaryHtml = '<table class="summary-table"><tr><td class="label">小計</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td>';
-    taxBreakdown.taxByRate.forEach(function(row) {
+    // ===== adjusted totals (must be computed BEFORE billing-box) =====
+    var adjByRate = (data && data.tax_adjustment_by_rate) ? data.tax_adjustment_by_rate : null;
+    if (typeof adjByRate === 'string') {
+      try { adjByRate = JSON.parse(adjByRate); } catch (e) { adjByRate = null; }
+    }
+    if (!adjByRate || typeof adjByRate !== 'object') adjByRate = {};
+
+    function getAdjForRate(rate) {
+      var key = String(rate);
+      var v = adjByRate[key];
+      var n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    var adjustedTaxRows = (taxBreakdown.taxByRate || []).map(function(row) {
+      var adj = (row.rate > 0 && row.base > 0) ? getAdjForRate(row.rate) : 0;
+      return {
+        rate: row.rate,
+        base: row.base,
+        tax: row.tax,
+        taxAdjusted: row.tax + adj,
+        adj: adj
+      };
+    });
+
+    var adjustedTotalTax = adjustedTaxRows.reduce(function(sum, row) {
+      if (row.rate > 0 && row.base > 0) return sum + row.taxAdjusted;
+      return sum;
+    }, 0);
+
+    var legacyAdj = 0;
+    var hasAdjByRate = Object.keys(adjByRate).length > 0;
+    if (!hasAdjByRate) {
+      var legacy = Number(data && data.tax_adjustment);
+      legacyAdj = Number.isFinite(legacy) ? legacy : 0;
+      adjustedTotalTax = adjustedTotalTax + legacyAdj;
+    }
+
+    var adjustedTotal = Number(taxBreakdown.subtotal || 0) + adjustedTotalTax;
+
+    // ===== end adjusted totals =====
+
+    var summaryHtml = '<table class="summary-table"><tr>'
+      + '<td class="label">小計</td><td class="value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td>';
+
+    adjustedTaxRows.forEach(function(row) {
       if (row.rate > 0 && row.base > 0) {
-        summaryHtml += '<td class="label">消費税' + row.rate + '%</td><td class="value">&yen;' + formatNumber(row.tax) + '</td>';
+        summaryHtml += '<td class="label">消費税' + row.rate + '%</td><td class="value">&yen;' + formatNumber(row.taxAdjusted) + '</td>';
       }
     });
-    summaryHtml += '<td class="label total-label">合計</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr></table>';
+
+    summaryHtml += '<td class="label total-label">合計</td><td class="value total-value">&yen;' + formatNumber(adjustedTotal) + '</td>'
+      + '</tr></table>';
     
-    // 税列があるので注記は不要
     var taxNote = '<div class="tax-note"></div>';
     
     var html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>請求書</title><style>' + getPrintStyles() + '</style></head><body>';
@@ -472,7 +651,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     // 左カラム（50%）- 触らない
     html += '<div class="left-col">';
     html += '<div class="billing-intro">下記の通り、ご請求申し上げます。</div>';
-    html += '<div class="billing-box"><span class="billing-label">ご請求金額<span class="billing-label-sub">（税込）</span></span><span class="billing-value">&yen;' + formatNumber(data.total_amount) + '</span></div>';
+    html += '<div class="billing-box"><span class="billing-label">ご請求金額<span class="billing-label-sub">（税込）</span></span><span class="billing-value">&yen;' + formatNumber(adjustedTotal) + '</span></div>';
     html += bankHtml;
     html += '</div>';
     
@@ -505,6 +684,14 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     html += '</div>'; // main-section end
     
+    // 対象期間（開始日・終了日が両方ある場合のみ表示）
+    var periodStart = data.billing_period_start || data.billing_period_start;
+    var periodEnd = data.billing_period_end || data.billing_period_end;
+    if (periodStart && periodEnd) {
+      html += '<div class="billing-period" style="font-size:12px;margin-bottom:6px;color:#333;">対象期間：'
+        + formatDate(periodStart) + '〜' + formatDate(periodEnd) + '</div>';
+    }
+
     // 明細テーブル
     html += itemsResult.html;
     
@@ -517,6 +704,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     html += '<div class="page-num">1 / 1</div>';
     html += '</div></body></html>';
     
+    html += '<!-- PDFGEN_MARK: ADJ_v1 -->';
     return html;
   }
   
@@ -528,8 +716,10 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
-    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var taxBreakdown = calculateTaxBreakdown(data.items || [], companyInfo);
     var totalTax = taxBreakdown.totalTax || 0;
+    var showTaxRateColumn = shouldShowTaxRateColumn(data.items || [], companyInfo.tax_rate_column_mode);
+    var estimateCodeColumnOptions = resolveEstimateCodeColumnOptions(companyInfo);
     
     var logoHtml = '';
     if (companyInfo.logo_url && companyInfo.logo_url.startsWith('data:image')) {
@@ -615,8 +805,11 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     html += '</div>'; // main-section end
     
-    // 明細テーブル（税列なし、上代・下代対応、備考列あり）
-    html += generateSimpleItemsTableHTML(data.items || [], 10, data.show_retail);
+    // 明細テーブル（設定に応じて税率列/JAN・商品番号列を表示）
+    html += generateSimpleItemsTableHTML(data.items || [], 10, data.show_retail, {
+      showTaxRateColumn: showTaxRateColumn,
+      estimateCodeColumn: estimateCodeColumnOptions
+    });
     
     // 合計行（税表示設定に合わせて表示）
     if (showTax) {
@@ -626,7 +819,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
         '<tr><td class="label total-label" style="background:#16a34a;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
         '</table></div>';
     } else {
-      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+      html += '<div class="items-footer"><div class="tax-note">※消費税は請求書発行時に加算してご請求いたします。</div><table class="summary-table">' +
         '<tr><td class="label total-label" style="background:#16a34a;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
         '</table></div>';
     }
@@ -645,7 +838,8 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var companyInfo = data.companyInfo || {};
     var clientInfo = data.clientInfo || {};
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
-    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var showTaxRateColumn = shouldShowTaxRateColumn(data.items || [], companyInfo.tax_rate_column_mode);
+    var taxBreakdown = calculateTaxBreakdown(data.items || [], companyInfo);
     var totalTax = taxBreakdown.totalTax || 0;
     var clientAddress = [clientInfo.address || '', clientInfo.address_number || ''].filter(Boolean).join('');
     var companyAddress = [companyInfo.address || '', companyInfo.address_number || ''].filter(Boolean).join('');
@@ -705,24 +899,33 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     
     // 明細テーブル（税列なし、固定7行、備考列あり）
     html += '<table class="items-table" style="font-size:7.5pt;"><thead><tr>';
-    html += '<th style="width:5%">No</th><th style="width:40%">品名</th><th style="width:9%">数量</th><th style="width:12%">単価</th><th style="width:14%">金額</th><th style="width:20%">備考</th>';
+    html += '<th style="width:5%">No</th><th style="width:36%">品名</th><th style="width:9%">数量</th><th style="width:12%">単価</th>';
+    if (showTaxRateColumn) html += '<th style="width:8%">税率</th>';
+    html += '<th style="width:14%">金額</th><th style="width:16%">備考</th>';
     html += '</tr></thead><tbody>';
     
     for (var i = 0; i < pageItems.length; i++) {
       var item = pageItems[i];
       var amount = item.amount || (item.quantity * item.unit_price);
       var notesCell = escapeHtml(item.notes || '');
-      html += '<tr><td style="text-align:center">' + item.rowNum + '</td><td>' + escapeHtml(item.product_name || '') + '</td><td style="text-align:center">' + formatNumber(item.quantity) + '</td><td style="text-align:right">&yen;' + formatNumber(item.unit_price) + '</td><td style="text-align:right">&yen;' + formatNumber(amount) + '</td><td style="font-size:7pt;">' + notesCell + '</td></tr>';
+      html += '<tr><td style="text-align:center">' + item.rowNum + '</td><td>' + escapeHtml(item.product_name || '') + '</td><td style="text-align:center">' + formatNumber(item.quantity) + '</td><td style="text-align:right">&yen;' + formatNumber(item.unit_price) + '</td>';
+      if (showTaxRateColumn) html += '<td style="text-align:center">' + normalizeTaxRate(item.tax_rate) + '%</td>';
+      html += '<td style="text-align:right">&yen;' + formatNumber(amount) + '</td><td style="font-size:7pt;">' + notesCell + '</td></tr>';
     }
     
     // 固定行数まで空行を埋める
     for (var j = pageItems.length; j < ROWS_PER_HALF; j++) {
-      html += '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>';
+      html += '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>';
+      if (showTaxRateColumn) html += '<td>&nbsp;</td>';
+      html += '<td>&nbsp;</td><td>&nbsp;</td></tr>';
     }
     html += '</tbody></table>';
     
     // 合計（最終ページのみ表示、税なし）
     if (isLastPage) {
+      if (!showTax) {
+        html += '<div class="tax-note" style="margin-top:1mm;">※消費税は請求書発行時に加算してご請求いたします。</div>';
+      }
       html += '<div style="display:flex;justify-content:flex-end;margin-top:1mm;">';
       html += '<table class="summary-table" style="font-size:8pt;">';
       if (showTax) {
@@ -757,7 +960,8 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     var clientInfo = data.clientInfo || {};
     var format = data.delivery_note_format || 'half';
     var showTax = Number(companyInfo.show_tax_on_estimate_delivery ?? 1) === 1;
-    var taxBreakdown = calculateTaxBreakdown(data.items || []);
+    var showTaxRateColumn = shouldShowTaxRateColumn(data.items || [], companyInfo.tax_rate_column_mode);
+    var taxBreakdown = calculateTaxBreakdown(data.items || [], companyInfo);
     var totalTax = taxBreakdown.totalTax || 0;
     
     var logoHtml = '';
@@ -863,8 +1067,10 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     // 「下記の通り納品いたします」を明細の1行上に表示
     html += '<div class="billing-intro" style="margin-top:4mm;margin-bottom:2mm;">下記の通り納品いたします。</div>';
     
-    // 明細テーブル（税列なし、備考列あり）
-    html += generateSimpleItemsTableHTML(data.items || [], 10, false);
+    // 明細テーブル（設定に応じて税率列を表示）
+    html += generateSimpleItemsTableHTML(data.items || [], 10, false, {
+      showTaxRateColumn: showTaxRateColumn
+    });
     
     // 合計行（税表示設定に合わせて表示）
     if (showTax) {
@@ -874,7 +1080,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
         '<tr><td class="label total-label" style="background:#9333ea;">合計（税込）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.total) + '</td></tr>' +
         '</table></div>';
     } else {
-      html += '<div class="items-footer"><div class="tax-note"></div><table class="summary-table">' +
+      html += '<div class="items-footer"><div class="tax-note">※消費税は請求書発行時に加算してご請求いたします。</div><table class="summary-table">' +
         '<tr><td class="label total-label" style="background:#9333ea;">合計（税抜）</td><td class="value total-value">&yen;' + formatNumber(taxBreakdown.subtotal) + '</td></tr>' +
         '</table></div>';
     }
@@ -898,10 +1104,16 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
     return previewWindow;
   }
   
-  function generatePdfFileName(type, date, clientName, isIndividual) {
+  function generatePdfFileName(type, date, clientName, isIndividual, data) {
     var honorific = isIndividual ? '様' : '御中';
-    var safeName = (clientName || '取引先').replace(/[\\/:*?"<>|]/g, '_');
-    if (type === 'invoice') return formatDateYYYYMM(date) + '請求書_' + safeName + honorific;
+    var safeName = sanitizeFileName(clientName);
+    if (type === 'invoice') {
+      var invoiceData = (data && typeof data === 'object') ? data : {};
+      if (!invoiceData.invoice_date) invoiceData.invoice_date = date;
+      if (!invoiceData.client_name) invoiceData.client_name = clientName;
+      var ym = getInvoiceYm(invoiceData);
+      return ym + '請求書_' + safeName + honorific;
+    }
     if (type === 'estimate') return formatDateYYYYMMDD(date) + '見積書_' + safeName + honorific;
     if (type === 'delivery') return formatDateYYYYMMDD(date) + '納品書_' + safeName + honorific;
     return 'document_' + safeName;
@@ -915,7 +1127,7 @@ body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size
   
   function previewInvoicePDF(data) {
     var clientInfo = data.clientInfo || {};
-    var fileName = generatePdfFileName('invoice', data.invoice_date, data.client_name, clientInfo.is_individual);
+    var fileName = generatePdfFileName('invoice', data.invoice_date, data.client_name, clientInfo.is_individual, data);
     return openPreview(generateInvoiceHTML(data), fileName);
   }
   

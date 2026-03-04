@@ -16,6 +16,13 @@ import type {
   FabricSpec,
 } from '../features/fabric-calculator/types'
 import { accountTypeCodeToLabel, normalizeAccountTypeToCode } from '../utils/bankAccount'
+import {
+  calculateTaxSummary,
+  normalizeTaxRoundingMode,
+  normalizeTaxRoundingUnit,
+  pickTaxCalculationSettings,
+  resolveItemTaxRate,
+} from '../utils/taxCalculation'
 import { sendInvoiceNotification } from '../utils/email'
 
 const api = new Hono()
@@ -194,6 +201,19 @@ function getResolvedUserId(_c?: any): string {
   return DEMO_USER_ID
 }
 
+async function fetchCompanyTaxSettings(userId: string) {
+  const { data, error } = await supabase
+    .from('company_info')
+    .select('tax_rounding_unit, tax_rounding_mode')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) {
+    console.warn('[API] fetchCompanyTaxSettings fallback used', error)
+    return pickTaxCalculationSettings({})
+  }
+  return pickTaxCalculationSettings(data || {})
+}
+
 function buildSimplePdfBuffer(lines: string[]): ArrayBuffer {
   const safeLines = lines.map((line) =>
     String(line || '')
@@ -233,9 +253,17 @@ function buildSimplePdfBuffer(lines: string[]): ArrayBuffer {
   ) as ArrayBuffer
 }
 
-// 税率を取得するヘルパー関数（0%に対応）
-function getTaxRate(taxRate: number | null | undefined): number {
-  return (taxRate !== null && taxRate !== undefined) ? taxRate : 10
+function normalizeTaxRateColumnMode(value: unknown): 'AUTO' | 'ON' | 'OFF' {
+  const normalized = String(value ?? '').trim().toUpperCase()
+  if (normalized === 'ON') return 'ON'
+  if (normalized === 'OFF') return 'OFF'
+  return 'AUTO'
+}
+
+function normalizeEstimateCodeColumnKind(value: unknown): 'JAN' | 'PRODUCT_CODE' {
+  const normalized = String(value ?? '').trim().toUpperCase()
+  if (normalized === 'PRODUCT_CODE') return 'PRODUCT_CODE'
+  return 'JAN'
 }
 
 function normalizeJan(value: unknown): string {
@@ -259,6 +287,41 @@ function parseNonNegativeNumber(value: unknown): number | null {
   const n = Number(value)
   if (Number.isNaN(n) || n < 0) return null
   return n
+}
+
+function parseSignedNumber(value: unknown, fallback = 0): number {
+  if (value === null || value === undefined || value === '') return fallback
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function parseTrimmedText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return String(value).trim()
+}
+
+function normalizeTaxAdjustmentByRateInput(value: unknown): Record<string, number> {
+  let source: any = value
+  if (typeof source === 'string') {
+    const raw = source.trim()
+    if (!raw) return {}
+    try {
+      source = JSON.parse(raw)
+    } catch {
+      return {}
+    }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {}
+
+  const normalized: Record<string, number> = {}
+  Object.keys(source).forEach((key) => {
+    const rate = Number(key)
+    const amount = Number((source as any)[key])
+    if (!Number.isFinite(rate) || rate <= 0) return
+    if (!Number.isFinite(amount) || amount === 0) return
+    normalized[String(rate)] = amount
+  })
+  return normalized
 }
 
 function toBool(value: unknown): boolean {
@@ -637,6 +700,11 @@ api.put('/company', async (c) => {
       default_payment_terms: data.default_payment_terms || '',
       default_delivery_date: data.default_delivery_date || '',
       delivery_note_format: data.delivery_note_format || 'half',
+      tax_rate_column_mode: normalizeTaxRateColumnMode(data.tax_rate_column_mode),
+      tax_rounding_unit: normalizeTaxRoundingUnit(data.tax_rounding_unit),
+      tax_rounding_mode: normalizeTaxRoundingMode(data.tax_rounding_mode),
+      estimate_code_column_enabled: toBool(data.estimate_code_column_enabled) ? 1 : 0,
+      estimate_code_column_kind: normalizeEstimateCodeColumnKind(data.estimate_code_column_kind),
       updated_at: new Date().toISOString()
     }
     let { error } = await supabase
@@ -689,7 +757,12 @@ api.put('/company', async (c) => {
       default_delivery_place: data.default_delivery_place || '',
       default_payment_terms: data.default_payment_terms || '',
       default_delivery_date: data.default_delivery_date || '',
-      delivery_note_format: data.delivery_note_format || 'half'
+      delivery_note_format: data.delivery_note_format || 'half',
+      tax_rate_column_mode: normalizeTaxRateColumnMode(data.tax_rate_column_mode),
+      tax_rounding_unit: normalizeTaxRoundingUnit(data.tax_rounding_unit),
+      tax_rounding_mode: normalizeTaxRoundingMode(data.tax_rounding_mode),
+      estimate_code_column_enabled: toBool(data.estimate_code_column_enabled) ? 1 : 0,
+      estimate_code_column_kind: normalizeEstimateCodeColumnKind(data.estimate_code_column_kind)
     }
     let { error } = await supabase
       .from('company_info')
@@ -1910,15 +1983,11 @@ api.post('/deliveries', async (c) => {
     deliveryNo = nextNo
   }
 
-  // 小計・税・合計計算（税率別）
-  let subtotal = 0
-  let totalTax = 0
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
-  }
-  const totalAmount = subtotal + totalTax
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const subtotal = taxSummary.subtotal
+  const totalTax = taxSummary.tax_amount
+  const totalAmount = taxSummary.total_amount
   
   const { data: delivery, error: deliveryError } = await supabase
     .from('deliveries')
@@ -1953,7 +2022,7 @@ api.post('/deliveries', async (c) => {
         category_id: item.category_id || null,
         quantity: item.quantity,
         unit_price: item.unit_price,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         notes: item.notes || '',
         display_order: i + 1
@@ -1974,15 +2043,11 @@ api.put('/deliveries/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
   
-  // 小計・税・合計計算（税率別）
-  let subtotal = 0
-  let totalTax = 0
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
-  }
-  const totalAmount = subtotal + totalTax
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const subtotal = taxSummary.subtotal
+  const totalTax = taxSummary.tax_amount
+  const totalAmount = taxSummary.total_amount
   
   const { error: deliveryError } = await supabase
     .from('deliveries')
@@ -2023,7 +2088,7 @@ api.put('/deliveries/:id', async (c) => {
         category_id: item.category_id || null,
         quantity: item.quantity,
         unit_price: item.unit_price,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         notes: item.notes || '',
         display_order: i + 1
@@ -2283,20 +2348,11 @@ api.post('/estimates', async (c) => {
     estimateNo = nextNo
   }
 
-  // 小計・税率別消費税・合計計算
-  let subtotal = 0
-  const taxByRate: { [key: number]: number } = {}
-  
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    const rate = getTaxRate(item.tax_rate)
-    if (!taxByRate[rate]) taxByRate[rate] = 0
-    taxByRate[rate] += Math.floor(amount * rate / 100)
-  }
-  
-  const taxAmount = Object.values(taxByRate).reduce((sum, tax) => sum + tax, 0)
-  const totalAmount = subtotal + taxAmount
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const subtotal = taxSummary.subtotal
+  const taxAmount = taxSummary.tax_amount
+  const totalAmount = taxSummary.total_amount
   
   const { data: estimate, error: estimateError } = await supabase
     .from('estimates')
@@ -2337,7 +2393,7 @@ api.post('/estimates', async (c) => {
         unit_price: item.unit_price,
         retail_price: item.retail_price || 0,
         use_retail_price: item.use_retail_price || 0,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         notes: item.notes || '',
         display_order: i + 1,
@@ -2354,20 +2410,11 @@ api.put('/estimates/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
   
-  // 小計・税率別消費税・合計計算
-  let subtotal = 0
-  const taxByRate: { [key: number]: number } = {}
-  
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    const rate = getTaxRate(item.tax_rate)
-    if (!taxByRate[rate]) taxByRate[rate] = 0
-    taxByRate[rate] += Math.floor(amount * rate / 100)
-  }
-  
-  const taxAmount = Object.values(taxByRate).reduce((sum, tax) => sum + tax, 0)
-  const totalAmount = subtotal + taxAmount
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const subtotal = taxSummary.subtotal
+  const taxAmount = taxSummary.tax_amount
+  const totalAmount = taxSummary.total_amount
   
   const { error: estimateError } = await supabase
     .from('estimates')
@@ -2414,7 +2461,7 @@ api.put('/estimates/:id', async (c) => {
         unit_price: item.unit_price,
         retail_price: item.retail_price || 0,
         use_retail_price: item.use_retail_price || 0,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         notes: item.notes || '',
         display_order: i + 1,
@@ -3142,6 +3189,7 @@ api.post('/invoices/batch-create', async (c) => {
         .slice(0, 3)
     : []
   const bankAccountIdsForInsert = requestedBankAccountIds.length > 0 ? requestedBankAccountIds : defaultBankAccountIds
+  const taxSettings = pickTaxCalculationSettings(companyInfo || {})
 
   const createdInvoices: any[] = []
   
@@ -3201,17 +3249,17 @@ api.post('/invoices/batch-create', async (c) => {
       if (deliveryItemsError) return handleSupabaseError(c, deliveryItemsError, 'delivery_items select for batch-create')
 
       if (deliveryItems && deliveryItems.length > 0) {
+        const deliveryTaxSummary = calculateTaxSummary(deliveryItems as any[], taxSettings)
+        subtotal += deliveryTaxSummary.subtotal
+        totalTax += deliveryTaxSummary.tax_amount
         for (const item of deliveryItems as any[]) {
-          const amount = item.quantity * item.unit_price
-          subtotal += amount
-          totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
           items.push({
             delivery_id: delivery.id,
             delivery_date: delivery.delivery_date,
             product_name: item.product_name,
             quantity: item.quantity,
             unit_price: item.unit_price,
-            tax_rate: item.tax_rate || 10
+            tax_rate: resolveItemTaxRate(item, 10)
           })
         }
       } else {
@@ -3233,9 +3281,10 @@ api.post('/invoices/batch-create', async (c) => {
     
     // 請求番号を生成
     const invoiceDate = issueDate
+    const sequenceBaseDate = `${target_month}-01`
     const { data: invoiceNo, error: invoiceNoError } = await supabase.rpc('next_document_no', {
       doc_type: 'invoice',
-      doc_date: invoiceDate
+      doc_date: sequenceBaseDate
     })
 
     if (invoiceNoError) return handleSupabaseError(c, invoiceNoError, 'invoices rpc next-no (batch-create)')
@@ -3477,14 +3526,19 @@ api.post('/invoices', async (c) => {
     invoiceNo = nextNo
   }
 
-  // 小計・税・合計計算
-  let subtotal = 0
-  let totalTax = 0
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const taxAdjustment = parseSignedNumber(data.tax_adjustment, 0)
+  const taxAdjustmentByRate = normalizeTaxAdjustmentByRateInput(data.tax_adjustment_by_rate)
+  const hasTaxAdjustmentByRate = Object.keys(taxAdjustmentByRate).length > 0
+  const taxAdjustmentByRateTotal = Object.values(taxAdjustmentByRate).reduce((sum, n) => sum + Number(n || 0), 0)
+  const effectiveTaxAdjustment = hasTaxAdjustmentByRate ? taxAdjustmentByRateTotal : taxAdjustment
+  const taxAdjustmentReason = parseTrimmedText(data.tax_adjustment_reason)
+  if (effectiveTaxAdjustment !== 0 && !taxAdjustmentReason) {
+    return c.json({ success: false, error: '税調整理由は必須です' }, 400)
   }
+  const subtotal = taxSummary.subtotal
+  const totalTax = taxSummary.tax_amount + effectiveTaxAdjustment
   const totalAmount = subtotal + totalTax
 
   const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
@@ -3504,6 +3558,9 @@ api.post('/invoices', async (c) => {
       payment_due_date: data.payment_due_date || null,
       bank_account_id: bankAccountIdNums[0] || null,
       subtotal,
+      tax_adjustment: taxAdjustment,
+      tax_adjustment_reason: taxAdjustmentReason || null,
+      tax_adjustment_by_rate: taxAdjustmentByRate,
       tax_amount: totalTax,
       total_amount: totalAmount,
       notes: data.notes || '',
@@ -3540,7 +3597,7 @@ api.post('/invoices', async (c) => {
         product_name: item.product_name,
         quantity: item.quantity,
         unit_price: item.unit_price,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         display_order: i + 1
       })
@@ -3569,14 +3626,19 @@ api.put('/invoices/:id', async (c) => {
   const id = c.req.param('id')
   const data = await c.req.json()
   
-  // 小計・税・合計計算
-  let subtotal = 0
-  let totalTax = 0
-  for (const item of data.items) {
-    const amount = item.quantity * item.unit_price
-    subtotal += amount
-    totalTax += Math.floor(amount * getTaxRate(item.tax_rate) / 100)
+  const taxSettings = await fetchCompanyTaxSettings(DEMO_USER_ID)
+  const taxSummary = calculateTaxSummary(data.items || [], taxSettings)
+  const taxAdjustment = parseSignedNumber(data.tax_adjustment, 0)
+  const taxAdjustmentByRate = normalizeTaxAdjustmentByRateInput(data.tax_adjustment_by_rate)
+  const hasTaxAdjustmentByRate = Object.keys(taxAdjustmentByRate).length > 0
+  const taxAdjustmentByRateTotal = Object.values(taxAdjustmentByRate).reduce((sum, n) => sum + Number(n || 0), 0)
+  const effectiveTaxAdjustment = hasTaxAdjustmentByRate ? taxAdjustmentByRateTotal : taxAdjustment
+  const taxAdjustmentReason = parseTrimmedText(data.tax_adjustment_reason)
+  if (effectiveTaxAdjustment !== 0 && !taxAdjustmentReason) {
+    return c.json({ success: false, error: '税調整理由は必須です' }, 400)
   }
+  const subtotal = taxSummary.subtotal
+  const totalTax = taxSummary.tax_amount + effectiveTaxAdjustment
   const totalAmount = subtotal + totalTax
 
   const normalizedBankIds = normalizeBankAccountIdsInput(data.bank_account_ids)
@@ -3594,6 +3656,9 @@ api.put('/invoices/:id', async (c) => {
       payment_due_date: data.payment_due_date || null,
       bank_account_id: bankAccountIdNums[0] || null,
       subtotal,
+      tax_adjustment: taxAdjustment,
+      tax_adjustment_reason: taxAdjustmentReason || null,
+      tax_adjustment_by_rate: taxAdjustmentByRate,
       tax_amount: totalTax,
       total_amount: totalAmount,
       notes: data.notes || '',
@@ -3659,7 +3724,7 @@ api.put('/invoices/:id', async (c) => {
         product_name: item.product_name,
         quantity: item.quantity,
         unit_price: item.unit_price,
-        tax_rate: getTaxRate(item.tax_rate),
+        tax_rate: resolveItemTaxRate(item, 10),
         amount: item.quantity * item.unit_price,
         display_order: i + 1
       })
@@ -4126,7 +4191,7 @@ api.post('/invoices/:id/send', async (c) => {
               quantity: Number(item.quantity || 0),
               unit_price: Number(item.unit_price || 0),
               amount: Number(item.amount || (Number(item.quantity || 0) * Number(item.unit_price || 0))),
-              tax_rate: getTaxRate(item.tax_rate),
+              tax_rate: resolveItemTaxRate(item, 10),
               notes: item.notes || '',
               item_notes: item.item_notes || '',
               display_order: Number(item.display_order || 0),

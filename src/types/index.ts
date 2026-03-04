@@ -21,6 +21,11 @@ export interface CompanyInfo {
   account_holder: string;
   default_closing_day?: string;
   default_payment_day?: string;
+  tax_rate_column_mode?: 'AUTO' | 'ON' | 'OFF';
+  tax_rounding_unit?: 'PER_LINE' | 'PER_RATE';
+  tax_rounding_mode?: 'FLOOR' | 'CEIL' | 'ROUND';
+  estimate_code_column_enabled?: boolean;
+  estimate_code_column_kind?: 'JAN' | 'PRODUCT_CODE';
 }
 
 export interface Category {
@@ -138,6 +143,8 @@ export interface Invoice {
   payment_due_date: string | null;
   subtotal: number;
   tax_amount: number;
+  tax_adjustment?: number;
+  tax_adjustment_reason?: string;
   total_amount: number;
   notes: string;
   status: string;
